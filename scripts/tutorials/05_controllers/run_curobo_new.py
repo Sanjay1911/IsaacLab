@@ -4,9 +4,18 @@ from isaaclab.app import AppLauncher
 app_launcher = AppLauncher(headless=False)
 simulation_app = app_launcher.app
 
+try:
+    # Third Party
+    import isaacsim
+except ImportError:
+    pass
+import sys
 import torch
+import torch.nn.functional as F
+torch.set_printoptions(profile="full")
 import matplotlib.pyplot as plt
 import numpy as np
+np.set_printoptions(threshold=sys.maxsize)
 import pandas as pd
 
 from curobo.types.robot import JointState
@@ -31,7 +40,10 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
-
+from isaacsim.core.api.world import World
+from helper import add_robot_to_scene, add_extensions
+from isaacsim.core.api.robots import Robot
+from isaacsim.core.utils.types import ArticulationAction
 @configclass
 class MinimalSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
@@ -50,8 +62,16 @@ class MinimalSceneCfg(InteractiveSceneCfg):
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/Stand/stand_instanceable.usd", scale=(2.0, 2.0, 2.0)
         ),
     )
-    robot = UR10_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot = UR5N_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
+
+def quat_diff(q1, q2):
+    q1 = F.normalize(q1, dim=-1)
+    q2 = F.normalize(q2, dim=-1)
+    # Quaternion dot product (cosine of half the angle)
+    dot = torch.sum(q1 * q2, dim=-1).clamp(-1.0, 1.0)
+    angle = 2 * torch.acos(torch.abs(dot))  # in radians
+    return torch.rad2deg(angle)  # convert to degrees
 
 
 def save_ee_plot(ee_current_positions, ee_goal_positions, time_steps, step):
@@ -86,11 +106,22 @@ def main():
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     
-    print("Scene" , scene)
+    # my_world = World(stage_units_in_meters=1.0)
+    # my_world._scene = scene
     robot = scene["robot"]
-    tensor_args = TensorDeviceType()
+    robot_prim_path = "/World/envs/env_0/Robot"
+    print("Robot type:", type(robot), robot_prim_path)
     try:
-        articulation_controller = robot.get_articulation_controller()
+        robot_wrapper = Robot(prim_path=robot_prim_path, name="robot")
+        robot_wrapper.initialize()
+        print("Robot Wrapper: ", robot_wrapper)
+    except Exception as e:
+        print(f"[ERROR] Failed to create robot wrapper: {e}")
+        pass
+    tensor_args = TensorDeviceType()
+
+    try:
+        articulation_controller = robot_wrapper.get_articulation_controller()
         if articulation_controller is None:
             raise ValueError("Articulation controller is None")
         print("[INFO] Articulation controller is available")
@@ -98,11 +129,14 @@ def main():
         print(f"[ERROR] Failed to get articulation controller: {e}")
 
     # Load CuRobo config
-    robot_cfg_path = join_path(get_robot_configs_path(), "ur10e.yml")
+    robot_cfg_path = join_path(get_robot_configs_path(), "ur5e_biopsy_needle_lock.yml")
     robot_cfg = load_yaml(robot_cfg_path)["robot_cfg"]
+    j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
+    # default_config = robot_cfg["kinematics"]["cspace"]["retract_config"]
 
+    # robot, robot_prim_path = add_robot_to_scene(robot_cfg, my_world, position=[0, 0, 0.5])
     #Isaac Lab
-    robot_entity_cfg = SceneEntityCfg("robot", joint_names=[".*"], body_names=["ee_link"])
+    robot_entity_cfg = SceneEntityCfg("robot", joint_names=[".*"], body_names=["tooltip"])
     robot_entity_cfg.resolve(scene)
 
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -139,8 +173,8 @@ def main():
 
     # Create a target pose (in world frame)
     goal_pose = Pose(
-        position=torch.tensor([[0.5, 0.5, 0.7]], device="cuda"),
-        quaternion=torch.tensor([[0.707, 0, 0.707, 0]], device="cuda"),
+        position=torch.tensor([[0.4, 0.4, 0.7]], device="cuda"),
+        quaternion=torch.tensor([[1.0, 0.0, 0, 0]], device="cuda"),
     )
 
     # Warm-up sim
@@ -153,7 +187,7 @@ def main():
     plan = None
     traj_len = 0
     reset_interval = 150
-    joint_tol = 1e-3 
+    joint_tol = 0.007
     ee_current_positions = []
     ee_goal_positions = []
     time_steps = []
@@ -179,12 +213,10 @@ def main():
                 velocity=vel[0][:6].reshape(1,6),
                 acceleration=acc[0][:6].reshape(1,6),
                 jerk=acc[0][:6].reshape(1,6),
-                joint_names=robot_cfg["kinematics"]["cspace"]["joint_names"],
+                joint_names=j_names[:6],
             )
-            print("Joint names in YAML:", robot_cfg["kinematics"]["cspace"]["joint_names"])
-            print("Joint names in sim:", robot.data.joint_names)
             # Plan to target
-            print("[INFO] Current joint state:", cu_js.position)
+            print("[INFO] Current joint state:", cu_js.joint_names)
             print("[INFO] Planning to goal pose:", goal_pose)
             result = motion_gen.plan_single(cu_js, goal_pose, plan_config)
             if not result.success.item():
@@ -193,40 +225,102 @@ def main():
 
             print("[INFO] Planning succeeded.")
             plan = result.get_interpolated_plan()
+            cmd_plan = motion_gen.get_full_js(plan)
+            print("[INFO] Command plan:", cmd_plan.joint_names)
+            sim_js_names = j_names[:6]
+            print("[INFO] Robot joint names:", sim_js_names)
+            idx_list = []
+            common_js_names = []
+            for x in sim_js_names:
+                if x in cmd_plan.joint_names:
+                    idx_list.append(robot_wrapper.get_dof_index(x))
+                    common_js_names.append(x)
+            print("[INFO] Common joint names:", common_js_names)
+            cmd_plan = cmd_plan.get_ordered_joint_state(common_js_names)
+            cmd_idx = 0
             traj_len = plan.position.shape[0]
             step = 0  # reset trajectory step index
+            #print("[INFO] Plan:", plan.position)
 
         if USE_CUROBO_EXECUTION:
-            print("[INFO] Executing cuRobo plan immediately (blocking)...")
-            for exec_step in range(traj_len):
-                joint_target = plan.position[exec_step].unsqueeze(0)
-                robot.set_joint_position_target(joint_target, joint_ids=robot_entity_cfg.joint_ids[:6])
-            plan = None         
+            if cmd_plan is not None:
+                cmd_state = cmd_plan[cmd_idx]
+                past_cmd = cmd_state.clone()
+                print("=== DEBUG ACTION INPUTS ===")
+                print("Position:", type(cmd_state.position), cmd_state.position.device)
+                print("Velocity:", type(cmd_state.velocity), cmd_state.velocity.device)
+                print("Position NumPy:", type(cmd_state.position.cpu().numpy()))
+                print("Velocity NumPy:", type(cmd_state.velocity.cpu().numpy()))
+                print("Joint Indices:", idx_list, type(idx_list), [type(i) for i in idx_list])
+                art_action = ArticulationAction(
+                    cmd_state.position.cpu().numpy(),
+                    #cmd_state.velocity.cpu().numpy(),
+                    joint_indices=idx_list,
+                )
+                articulation_controller.apply_action(art_action)
+
+                for _ in range(2):
+                    scene.write_data_to_sim()
+                    sim.step()
+                    scene.update(sim_dt)
+
+                cmd_idx += 1
+                if cmd_idx >= len(cmd_plan.position):
+                    print("Reached target pose, applying pneumatic...")
+                    pneumatic_action = ArticulationAction(np.array([-0.145]), joint_indices=[6])
+                    articulation_controller.apply_action(pneumatic_action)
+                    for _ in range(5):
+                        scene.write_data_to_sim()
+                        sim.step()
+                        scene.update(sim_dt)
+                    cmd_idx = 0
+                    cmd_plan = None
+                    past_cmd = None
+
         elif plan is not None and step < traj_len:
-            # ee_error = np.linalg.norm(ee_pos - goal_pos)
-            # if ee_error < 1e-2:
-            #     print(f"[INFO] EE is close to goal. Stopping joint commands. Error: {ee_error:.4f}")
-            #     plan = None  # Stop executing plan
-            # else:
+            ee_pos = robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], 0:3].cpu().numpy()[0]
+            ee_rot = robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], 3:7].cpu().numpy()[0]
+            goal_pos = goal_pose.position.cpu().numpy()[0]
+            goal_rot = goal_pose.quaternion.cpu().numpy()[0]
+            pos_error = np.linalg.norm(ee_pos - goal_pos)
+            q_current = torch.tensor([ee_rot], device='cuda')
+            q_goal = torch.tensor([goal_rot], device='cuda')
+            angle_error = quat_diff(
+                q_current,
+                q_goal,
+            )
+            if pos_error < joint_tol :
+                print(f"[INFO] Reached goal position with error: {pos_error:.4f} m")
+                if angle_error < 2.0:
+                    print(f"[INFO] Reached goal orientation with error below 2 degrees")
+                else:
+                    print(f"[INFO] Orientation error above 2 degrees")
+                plan = None
+                step = 0
+                continue
             robot.set_joint_position_target(plan.position[step], joint_ids=robot_entity_cfg.joint_ids[:6])
-        # ee_pos = robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], 0:3].cpu().numpy()[0]
-        # goal_pos = goal_pose.position.cpu().numpy()[0]
+            scene.write_data_to_sim()
+            sim.step()
+            scene.update(sim_dt)
 
-        # ee_current_positions.append(ee_pos)
-        # ee_goal_positions.append(goal_pos)
-        # time_steps.append(step * sim_dt)
+        ee_pos = robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], 0:3].cpu().numpy()[0]
+        goal_pos = goal_pose.position.cpu().numpy()[0]
 
-        # df = pd.DataFrame({
-        #     "time": time_steps,
-        #     "ee_x": [p[0] for p in ee_current_positions],
-        #     "ee_y": [p[1] for p in ee_current_positions],
-        #     "ee_z": [p[2] for p in ee_current_positions],
-        #     "goal_x": [p[0] for p in ee_goal_positions],
-        #     "goal_y": [p[1] for p in ee_goal_positions],
-        #     "goal_z": [p[2] for p in ee_goal_positions],
-        # })
-        # df.to_csv("ee_trajectory.csv", index=False)
-        # Step sim
+        ee_current_positions.append(ee_pos)
+        ee_goal_positions.append(goal_pos)
+        time_steps.append(step * sim_dt)
+
+        df = pd.DataFrame({
+            "time": time_steps,
+            "ee_x": [p[0] for p in ee_current_positions],
+            "ee_y": [p[1] for p in ee_current_positions],
+            "ee_z": [p[2] for p in ee_current_positions],
+            "goal_x": [p[0] for p in ee_goal_positions],
+            "goal_y": [p[1] for p in ee_goal_positions],
+            "goal_z": [p[2] for p in ee_goal_positions],
+        })
+        df.to_csv("ee_trajectory.csv", index=False)
+
         scene.write_data_to_sim()
         sim.step()
         scene.update(sim_dt)
@@ -240,14 +334,14 @@ def main():
             goal_pose.position,
             goal_pose.quaternion,
         )
-        print("Joint positions: ", robot.data.joint_pos[0])
+        # print("wrapper joint pos: ", robot_wrapper.get_joint_positions())
+        # print("Joint positions: ", robot.data.joint_pos[0])
         print("EE_Current: ", robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], 0:3], robot.data.body_state_w[:, robot_entity_cfg.body_ids[0], 3:7])  
         print("EE_Goal: ", goal_pose.position , goal_pose.quaternion)  
 
         # Now increment step
         if plan is not None and step < traj_len:
             step += 1
-
 
 
 if __name__ == "__main__":
