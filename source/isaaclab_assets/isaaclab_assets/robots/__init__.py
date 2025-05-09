@@ -25,3 +25,4 @@ from .spot import *
 from .unitree import *
 from .universal_robots import *
 from .ur5e import *
+from .ur5e_minimal import *
