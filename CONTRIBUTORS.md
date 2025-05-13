@@ -101,6 +101,7 @@ Guidelines for modifications:
 * Stephan Pleines
 * Tyler Lum
 * Victor Khaustov
+* Tim Kobiolka
 * Vladimir Fokow
 * Wei Yang
 * Xavier Nal
