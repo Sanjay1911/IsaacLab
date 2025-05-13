@@ -375,6 +375,7 @@ def sample_points_usd(flag="skull"):
             print("[ERROR] Failed to convert to UsdGeom mesh prim due to : ", e)
             pass
 
+
 def draw_lines(start, end, color):
     if isinstance(start, torch.Tensor):
         start_pose = start.cpu().numpy()
@@ -473,7 +474,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=16, env_spacing=2.0)
+    scene_cfg = MinimalSceneCfg(num_envs=1, env_spacing=1.0)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     num_envs = scene.num_envs
@@ -507,16 +508,12 @@ def main():
         except Exception as e:
             print(f"[ERROR] ENV {i}: Failed to compute entry points: {e}")
             data["entry_points"] = []
-    
-    for i, data in env_data.items():    
-        if "tumor_centroid" in data and len(data["tumor_centroid"]) > 0:
-            draw_points([data["tumor_centroid"]], color=(0.0, 0.0, 1.0, 1.0), size=8.0)
 
     for i, data in env_data.items():
         if "entry_points" in data and len(data["entry_points"]) > 0:
             draw_points(data["entry_points"], color=(1.0, 0.0, 0.0, 1.0), size=4.0)
-            # for entry_pt in data["entry_points"]:
-            #     draw_lines(entry_pt, data["tumor_centroid"], color="yellow")
+        if "tumor_centroid" in data and len(data["tumor_centroid"]) > 0:
+            draw_points([data["tumor_centroid"]], color=(0.0, 0.0, 1.0, 1.0), size=8.0)
 
     for i, data in env_data.items():
         if "entry_points" in data and len(data["entry_points"]) > 0:
@@ -539,7 +536,7 @@ def main():
             for entry_pt in data["top_entry_points"]:
                 draw_points([entry_pt["entry_point"]], color=(0.0, 1.0, 0.0, 1.0), size=8.0)
                 draw_points([data["tumor_centroid"]], color=(1.0, 1.0, 0.0, 1.0), size=8.0)
-                p1 = np.array(entry_pt["entry_point"])  # ensure it's NumPy
+                p1 = np.array(entry_pt["entry_point"]) 
                 p2 = np.array(data["tumor_centroid"])
                 draw_lines(p1, p2, color="green")
                 print(f"[ENV {i}] Drawing line from {p1} to {p2}")
@@ -561,7 +558,6 @@ def main():
     #visualise_new_paths(env_data[0]["vessel_points"])
     robot_entity_cfg = SceneEntityCfg("robot", joint_names=[".*"], body_names=["tooltip"])
     robot_entity_cfg.resolve(scene)
-    #print("[INFO]: Setup complete...")
 
     sim_dt = sim.get_physics_dt()
     count = 0
@@ -571,23 +567,11 @@ def main():
         if count % 150 == 0:
             # reset counter
             count = 0
-            # reset the scene entities
-            # root state
-            # we offset the root state by the origin since the states are written in simulation world frame
-            # if this is not done, then the robots will be spawned at the (0, 0, 0) of the simulation world
             root_state = robot.data.default_root_state.clone()
-            print("[INFO]: Default root state: ", root_state,root_state.shape)
-            # Tilt 90° about X-axis => quaternion: [w, x, y, z] = [cos(θ/2), sin(θ/2)*axis]
-            q_tilt = torch.tensor([[0.7071, 0.7071, 0.0, 0.0]], device=sim.device)  # 90° around X
-            # tilt with some noise
-            q_tilt += torch.rand_like(q_tilt) * 0.5
-            q_tilt = q_tilt / q_tilt.norm(dim=1, keepdim=True)  # normalize
-
             tooltip_offset_pos = torch.tensor([0.02464, -0.00005, -0.0265], dtype=torch.float64)
             tooltip_offset_quat = torch.tensor(
                 R.from_euler("xyz", [0, 0, 1.5707]).as_quat()
-            )  # (x, y, z, w)
-            #tooltip_offset_quat = tooltip_offset_quat[[3, 0, 1, 2]]  # (w, x, y, z)
+            ) 
 
             # Build transform holder → tooltip, then invert
             T_holder_to_tooltip = make_transform(tooltip_offset_pos, tooltip_offset_quat)
@@ -605,32 +589,21 @@ def main():
                 holder_pos_trch[i] = holder_pos
                 holder_quat_trch[i] = holder_quat
 
-            #shared_quat = holder_quat_trch[0]
-            #holder_quat_trch[:] = shared_quat
-            # Write pose to sim
             root_state = robot.data.default_root_state.clone()
             print("[INFO]: Default root state: ", root_state) 
             holder_pos_trch.to(device=sim.device)
             holder_quat_trch.to(device=sim.device)
-            root_state[:, :3] = holder_pos_trch #+ scene.env_origins
+            root_state[:, :3] = holder_pos_trch
             root_state[:, 3:7] = holder_quat_trch
+            # set really slow velocity
+            root_state[:, 7:] = torch.zeros_like(root_state[:, 7:])
             print("[INFO]: Root state: ", root_state[0])
             robot.write_root_pose_to_sim(root_state[:, :7])
             robot.write_root_velocity_to_sim(root_state[:, 7:])
-            #root_state[:, :3] = torch.tensor([[0.0, 0.0, 0.5]],dtype=torch.float32, device=sim.device)+ scene.env_origins # set root position
-            #root_state[:, 3:7] = q_tilt  # set root orientation
-            # print("[LOG]: Env Origins: ",scene.env_origins, scene.env_origins.device)
-            # root_state[:, :3] = positions
-            # root_state[:, 3:7] = quaternions
             print("[INFO]: Updated Root state: ", root_state)
-            # robot.write_root_pose_to_sim(root_state[:, :7])
-            # robot.write_root_velocity_to_sim(root_state[:, 7:])
-
             joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
-            joint_pos += torch.rand_like(joint_pos) * 0.5
-            #print("[INFO]: Joint pos: ", joint_pos)
+            joint_pos += torch.rand_like(joint_pos) * -1
             robot.write_joint_state_to_sim(joint_pos, joint_vel)
-
             robot.reset()
             print("[INFO]: Resetting robot state...")
         scene.write_data_to_sim()
