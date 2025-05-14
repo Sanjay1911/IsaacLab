@@ -33,13 +33,13 @@ UR5_CFG = ArticulationCfg(
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         joint_pos={
-            "holder_needle_slider": -0.02, 
+            "holder_needle_slider": -0.015, 
         },
     ),
     actuators={
         "arm": ImplicitActuatorCfg(
             joint_names_expr=[".*"],
-            velocity_limit=None,
+            velocity_limit=1.0,
             effort_limit=None,
             stiffness=None,
             damping=None,
