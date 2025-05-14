@@ -31,16 +31,17 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 """Rest everything follows."""
-
+import os
 import torch
 import numpy as np
 from pxr import UsdGeom, UsdPhysics
 import omni.log
 import omni.physics.tensors.impl.api as physx
+import omni.replicator.core as rep
 import trimesh
 from scipy.spatial import cKDTree
 import open3d as o3d
-import math
+import math, datetime
 from typing import List, Tuple
 from scipy.spatial.transform import Rotation as R
 import isaacsim.core.utils.prims as prim_utils
@@ -57,10 +58,17 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.warp import convert_to_warp_mesh, raycast_mesh
-
+from isaaclab.sensors.ray_caster import RayCasterCamera, RayCasterCameraCfg, patterns
+from isaaclab.utils.math import project_points, unproject_depth
+from isaaclab.utils import convert_dict_to_backend
+from isaaclab.sensors import CameraCfg, ContactSensorCfg, RayCasterCfg, patterns
+from isaaclab.markers import VisualizationMarkers
+from isaaclab.markers.config import FRAME_MARKER_CFG
+from isaaclab.utils.math import quat_mul
 draw = _debug_draw.acquire_debug_draw_interface()
 DIST_THRESHOLD = 0.005  
 SCORE_THRESHOLD = 300
+CAMERA_SAVE = True
 all_lines = []
 all_collisions = []
 all_entry_points = []
@@ -102,8 +110,39 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
+
+    tumor2 = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Tumor2",
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(-0.078, 0.21101, 0.17479), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    )
+
+    tumor3 = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Tumor3",
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(-0.11978, 0.11793, 0.17479), rot=(0.0, 0.0, 0.0, 0.0)),
+    )
+
     robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
+    raycast_camera = RayCasterCameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor", "{ENV_REGEX_NS}/Vessel"],
+        update_period=0.1,
+        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0) ,convention="world"),
+        data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
+        debug_vis=True,
+        pattern_cfg=patterns.PinholeCameraPatternCfg(
+            focal_length=24.0,
+            horizontal_aperture=20.955,
+            height=420,
+            width=640,
+        ),
+    )
 
 def batch_get_start_poses(entries: torch.Tensor, tumors: torch.Tensor):
     """
@@ -470,7 +509,7 @@ def main():
         │   → Computed entry pose for the robot end effector
     """
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device)
+    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device, use_fabric=False)
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
@@ -479,9 +518,22 @@ def main():
     sim.reset()
     num_envs = scene.num_envs
     robot = scene["robot"]
-
+    print("[INFO] Before loading path Robot: ", robot.body_names)
+    needle_index = robot.data.body_names.index("tooltip")
+    needle_pose_w = robot.data.body_state_w[:, needle_index, 0:7]
+    needle_pos = needle_pose_w[:, :3]
+    needle_quat = needle_pose_w[:, 3:7]
+    print("Needle position:", needle_pos)
+    print("Needle orientation (quat):", needle_quat)
+    camera = scene["raycast_camera"]
+    tumor = scene["tumor"]
     env_data = {}
-
+    print(camera._view)
+  # returns torch.Tensor of positions
+    frame_marker_cfg = FRAME_MARKER_CFG.copy()
+    frame_marker_cfg.markers["frame"].scale = (0.05, 0.05, 0.05)
+    needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/needle"))
+    camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
     skull_meshes = get_trimesh_mesh("skull")
     for i, (skull_mesh, _) in enumerate(skull_meshes):
         skull_points, _ = sample_even_fit_mesh(skull_mesh, n_spheres=20000, sphere_radius=0.005)
@@ -558,16 +610,57 @@ def main():
     #visualise_new_paths(env_data[0]["vessel_points"])
     robot_entity_cfg = SceneEntityCfg("robot", joint_names=[".*"], body_names=["tooltip"])
     robot_entity_cfg.resolve(scene)
-
+    date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # Create replicator writer
+    output_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", "ray_caster_camera_lab", date)
+    rep_writer = rep.BasicWriter(output_dir=output_dir, frame_padding=3)
     sim_dt = sim.get_physics_dt()
     count = 0
     # Simulation loop
     while simulation_app.is_running():
-        # Reset
+        camera.update(sim_dt)
+        needle_index = robot.data.body_names.index("tooltip")
+        needle_pose_w = robot.data.body_state_w[:, needle_index, 0:7]
+        needle_pos = needle_pose_w[:, :3]
+        needle_quat = needle_pose_w[:, 3:7]
+        needle_marker.visualize(needle_pos, needle_quat)
+        print("Needle position:", needle_pos)
+        print("Needle orientation (quat):", needle_quat)
+        transforms = camera._view.get_transforms()
+        pos_w, quat_w = transforms[:, :3], transforms[:, 3:]
+        camera_marker.visualize(pos_w, quat_w)
+        print("Camera parent position:", pos_w)
+        print("Camera parent orientation (quat):", quat_w)
+        # print(camera)
+        # print("Received shape of depth image: ", camera.data.output["distance_to_image_plane"].shape)
+        print("-------------------------------")
+        if CAMERA_SAVE:
+                camera_index = 0
+                # note: BasicWriter only supports saving data in numpy format, so we need to convert the data to numpy.
+                single_cam_data = convert_dict_to_backend(
+                    {k: v[camera_index] for k, v in camera.data.output.items()}, backend="numpy"
+                )
+                # Extract the other information
+                single_cam_info = camera.data.info[camera_index]
+
+                # Pack data back into replicator format to save them using its writer
+                rep_output = {"annotators": {}}
+                for key, data, info in zip(single_cam_data.keys(), single_cam_data.values(), single_cam_info.values()):
+                    if info is not None:
+                        rep_output["annotators"][key] = {"render_product": {"data": data, **info}}
+                    else:
+                        rep_output["annotators"][key] = {"render_product": {"data": data}}
+                # Save images
+                rep_output["trigger_outputs"] = {"on_time": camera.frame[camera_index]}
+                rep_writer.write(rep_output)
+
+                # Pointcloud in world frame
+                points_3d_cam = unproject_depth(
+                    camera.data.output["distance_to_image_plane"], camera.data.intrinsic_matrices
+                )
         if count % 150 == 0:
             # reset counter
             count = 0
-            root_state = robot.data.default_root_state.clone()
             tooltip_offset_pos = torch.tensor([0.02464, -0.00005, -0.0265], dtype=torch.float64)
             tooltip_offset_quat = torch.tensor(
                 R.from_euler("xyz", [0, 0, 1.5707]).as_quat()
@@ -605,7 +698,10 @@ def main():
             joint_pos += torch.rand_like(joint_pos) * -1
             robot.write_joint_state_to_sim(joint_pos, joint_vel)
             robot.reset()
-            print("[INFO]: Resetting robot state...")
+            camera.update(sim_dt)   
+            
+        print("[INFO]: Resetting robot state...")
+        # print(scene["raycast_camera"])
         scene.write_data_to_sim()
         sim.step()
         count += 1
