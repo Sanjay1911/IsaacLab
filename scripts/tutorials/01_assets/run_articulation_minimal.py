@@ -535,7 +535,7 @@ def main():
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
-    frame_marker_cfg.markers["frame"].scale = (0.05, 0.05, 0.05)
+    frame_marker_cfg.markers["frame"].scale = (0.015, 0.015, 0.015)
     needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/needle"))
     camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
     num_envs = scene.num_envs
@@ -563,6 +563,14 @@ def main():
         if i not in env_data:
             env_data[i] = {}
         env_data[i]["vessel_points"] = vessel_points
+
+    tumor_meshes = get_trimesh_mesh("tumor")
+    for i, (tumor_mesh, tumor_centroid, tumor_vertices, tumor_prim) in enumerate(tumor_meshes):
+        tumor_points, _ = sample_even_fit_mesh(tumor_mesh, n_spheres=20000, sphere_radius=0.005)
+        if i not in env_data:
+            env_data[i] = {}
+        env_data[i]["tumor_centroid"] = tumor_centroid
+        env_data[i]["tumor_points"] = tumor_points
 
     for i, data in env_data.items():
         try:
