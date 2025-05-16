@@ -20,7 +20,8 @@ import argparse
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
-parser = argparse.ArgumentParser(description="Tutorial on spawning and interacting with an articulation.")
+parser = argparse.ArgumentParser(description="Tutorial on Preop Path Planning with simulated brainshift and Intraoperative Vision")
+
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -31,15 +32,16 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 """Rest everything follows."""
-import os
+import os, yaml
 import torch
 import numpy as np
-from pxr import UsdGeom, UsdPhysics
+from pxr import UsdGeom, UsdPhysics, Gf
 import omni.log
 import omni.physics.tensors.impl.api as physx
 import omni.replicator.core as rep
 import trimesh
 from scipy.spatial import cKDTree
+from scipy.interpolate import RBFInterpolator
 import open3d as o3d
 import math, datetime
 from typing import List, Tuple
@@ -55,6 +57,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.assets import AssetBaseCfg
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.utils.io import dump_pickle, load_pickle
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.warp import convert_to_warp_mesh, raycast_mesh
@@ -68,7 +71,8 @@ from isaaclab.utils.math import quat_mul
 draw = _debug_draw.acquire_debug_draw_interface()
 DIST_THRESHOLD = 0.005  
 SCORE_THRESHOLD = 300
-CAMERA_SAVE = True
+CAMERA_SAVE = False
+SIM = True
 all_lines = []
 all_collisions = []
 all_entry_points = []
@@ -111,31 +115,15 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
 
-    tumor2 = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Tumor2",
-        spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(-0.078, 0.21101, 0.17479), rot=(0.70710, 0.70710, 0.0, 0.0)),
-    )
-
-    tumor3 = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Tumor3",
-        spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(-0.11978, 0.11793, 0.17479), rot=(0.0, 0.0, 0.0, 0.0)),
-    )
-
     robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     raycast_camera = RayCasterCameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
         mesh_prim_paths=["{ENV_REGEX_NS}/Tumor", "{ENV_REGEX_NS}/Vessel"],
         update_period=0.1,
-        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0, 1.0) ,convention="world"),
+        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
         data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
-        debug_vis=True,
+        debug_vis=False,
         pattern_cfg=patterns.PinholeCameraPatternCfg(
             focal_length=24.0,
             horizontal_aperture=20.955,
@@ -359,9 +347,9 @@ def get_trimesh_mesh(flag="skull"):
                 raise ValueError("Mesh contains non-triangular faces. You need to triangulate first.")
             faces = faces.reshape((-1, 3))
             tm = trimesh.Trimesh(vertices=points, faces=faces, process=False)
-            meshes.append((tm , tm.centroid))
+            meshes.append((tm , tm.centroid, tm.vertices, mesh_prim))
         except Exception as e:
-            print("[ERROR] Failed to convert to mesh prim due to trimesh mesh")
+            print("[ERROR] Failed to convert to mesh prim due to trimesh mesh :", e)
             continue
     if len(meshes) == 0:
         raise RuntimeError(f"Invalid mesh prim at path: {prim.GetPath()}")
@@ -414,6 +402,36 @@ def sample_points_usd(flag="skull"):
             print("[ERROR] Failed to convert to UsdGeom mesh prim due to : ", e)
             pass
 
+def deform_vertices_rbf(vertices, center, influence_radius, step, total_steps=60, max_shift=0.2):
+    shift_ratio = step / total_steps
+    shift_magnitude = shift_ratio * max_shift
+    distances = np.linalg.norm(vertices - center, axis=1)
+    control_ids = np.where(distances < influence_radius)[0]
+    control_points = vertices[control_ids]
+    if len(control_points) == 0:
+        min_dist = np.min(np.linalg.norm(vertices - center, axis=1))
+        print(f"Min distance from craniotomy center to mesh: {min_dist} but influence radius is {influence_radius}")    
+        print("No control points within influence radius.")
+        return vertices
+    
+    displacements = np.zeros_like(control_points)
+
+    if len(control_points) > 1000:
+        idx = np.random.choice(len(control_points), 1000, replace=False)
+        control_points = control_points[idx]
+        displacements = displacements[idx]
+
+    for i, p in enumerate(control_points):
+        dist = np.linalg.norm(p - center)
+        falloff = np.exp(-dist**2 / (2 * (influence_radius / 2)**2))
+        displacements[i, 2] -= shift_magnitude * falloff
+
+    # RBF interpolation (include anchor points if needed)
+    rbf = RBFInterpolator(control_points, displacements, kernel="thin_plate_spline", smoothing=1e-5)
+    deformed = vertices + rbf(vertices)
+
+    return deformed
+    
 
 def draw_lines(start, end, color):
     if isinstance(start, torch.Tensor):
@@ -516,6 +534,10 @@ def main():
     scene_cfg = MinimalSceneCfg(num_envs=1, env_spacing=1.0)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
+    frame_marker_cfg = FRAME_MARKER_CFG.copy()
+    frame_marker_cfg.markers["frame"].scale = (0.05, 0.05, 0.05)
+    needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/needle"))
+    camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
     num_envs = scene.num_envs
     robot = scene["robot"]
     print("[INFO] Before loading path Robot: ", robot.body_names)
@@ -530,23 +552,13 @@ def main():
     env_data = {}
     print(camera._view)
   # returns torch.Tensor of positions
-    frame_marker_cfg = FRAME_MARKER_CFG.copy()
-    frame_marker_cfg.markers["frame"].scale = (0.05, 0.05, 0.05)
-    needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/needle"))
-    camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
     skull_meshes = get_trimesh_mesh("skull")
-    for i, (skull_mesh, _) in enumerate(skull_meshes):
+    for i, (skull_mesh, _, _, _) in enumerate(skull_meshes):
         skull_points, _ = sample_even_fit_mesh(skull_mesh, n_spheres=20000, sphere_radius=0.005)
         env_data[i] = {"skull_points": skull_points}
 
-    tumor_meshes = get_trimesh_mesh("tumor")
-    for i, (_, tumor_centroid) in enumerate(tumor_meshes):
-        if i not in env_data:
-            env_data[i] = {}
-        env_data[i]["tumor_centroid"] = tumor_centroid
-
     vessel_meshes = get_trimesh_mesh("vessel")
-    for i, (vessel_mesh, _) in enumerate(vessel_meshes):
+    for i, (vessel_mesh, _, vessel_vertices, vessel_prim) in enumerate(vessel_meshes):
         vessel_points, _ = sample_even_fit_mesh(vessel_mesh, n_spheres=20000, sphere_radius=0.005)
         if i not in env_data:
             env_data[i] = {}
