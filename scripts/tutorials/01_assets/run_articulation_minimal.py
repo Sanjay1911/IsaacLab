@@ -73,6 +73,7 @@ DIST_THRESHOLD = 0.005
 SCORE_THRESHOLD = 300
 CAMERA_SAVE = False
 SIM = True
+MODE = "NONE"  # "RAYCAST" or None
 all_lines = []
 all_collisions = []
 all_entry_points = []
@@ -228,10 +229,15 @@ def batch_get_start_poses_old(entries: torch.Tensor, tumor: torch.Tensor):
 
 def make_transform(position, quaternion):
     """Convert pos + quat to a 4x4 transform matrix."""
-    rot = R.from_quat(quaternion.cpu().numpy()[[1, 2, 3, 0]])  # Convert (w,x,y,z) → (x,y,z,w)
+    if isinstance(position, torch.Tensor):
+        position = position.cpu().numpy()
+    if isinstance(quaternion, torch.Tensor):
+        quaternion = quaternion.cpu().numpy()
+
+    rot = R.from_quat(quaternion[[1, 2, 3, 0]])  # Convert (w,x,y,z) → (x,y,z,w)
     T = torch.eye(4, dtype=torch.float64)
     T[:3, :3] = torch.tensor(rot.as_matrix())
-    T[:3, 3] = position
+    T[:3, 3] = torch.tensor(position)
     return T
 
 
@@ -531,7 +537,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=1, env_spacing=1.0)
+    scene_cfg = MinimalSceneCfg(num_envs=32, env_spacing=0.0)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -552,78 +558,107 @@ def main():
     env_data = {}
     print(camera._view)
   # returns torch.Tensor of positions
-    skull_meshes = get_trimesh_mesh("skull")
-    for i, (skull_mesh, _, _, _) in enumerate(skull_meshes):
-        skull_points, _ = sample_even_fit_mesh(skull_mesh, n_spheres=20000, sphere_radius=0.005)
-        env_data[i] = {"skull_points": skull_points}
+    if MODE == "RAYCAST":
+        skull_meshes = get_trimesh_mesh("skull")
+        for i, (skull_mesh, _, _, _) in enumerate(skull_meshes):
+            skull_points, _ = sample_even_fit_mesh(skull_mesh, n_spheres=20000, sphere_radius=0.005)
+            env_data[i] = {"skull_points": skull_points}
 
-    vessel_meshes = get_trimesh_mesh("vessel")
-    for i, (vessel_mesh, _, vessel_vertices, vessel_prim) in enumerate(vessel_meshes):
-        vessel_points, _ = sample_even_fit_mesh(vessel_mesh, n_spheres=20000, sphere_radius=0.005)
-        if i not in env_data:
-            env_data[i] = {}
-        env_data[i]["vessel_points"] = vessel_points
+        vessel_meshes = get_trimesh_mesh("vessel")
+        for i, (vessel_mesh, _, vessel_vertices, vessel_prim) in enumerate(vessel_meshes):
+            vessel_points, _ = sample_even_fit_mesh(vessel_mesh, n_spheres=20000, sphere_radius=0.005)
+            if i not in env_data:
+                env_data[i] = {}
+            env_data[i]["vessel_points"] = vessel_points
 
-    tumor_meshes = get_trimesh_mesh("tumor")
-    for i, (tumor_mesh, tumor_centroid, tumor_vertices, tumor_prim) in enumerate(tumor_meshes):
-        tumor_points, _ = sample_even_fit_mesh(tumor_mesh, n_spheres=20000, sphere_radius=0.005)
-        if i not in env_data:
-            env_data[i] = {}
-        env_data[i]["tumor_centroid"] = tumor_centroid
-        env_data[i]["tumor_points"] = tumor_points
+        tumor_meshes = get_trimesh_mesh("tumor")
+        for i, (tumor_mesh, tumor_centroid, tumor_vertices, tumor_prim) in enumerate(tumor_meshes):
+            tumor_points, _ = sample_even_fit_mesh(tumor_mesh, n_spheres=20000, sphere_radius=0.005)
+            if i not in env_data:
+                env_data[i] = {}
+            env_data[i]["tumor_centroid"] = tumor_centroid
+            env_data[i]["tumor_points"] = tumor_points
 
-    for i, data in env_data.items():
+        for i, data in env_data.items():
+            try:
+                entry_pts = get_entry_points(data["skull_points"], data["tumor_centroid"])
+                data["entry_points"] = entry_pts
+                #print(f"[ENV {i}] Entry points found: {len(entry_pts)}")
+            except Exception as e:
+                print(f"[ERROR] ENV {i}: Failed to compute entry points: {e}")
+                data["entry_points"] = []
+
+        for i, data in env_data.items():
+            if "entry_points" in data and len(data["entry_points"]) > 0:
+                draw_points(data["entry_points"], color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+            if "tumor_centroid" in data and len(data["tumor_centroid"]) > 0:
+                draw_points([data["tumor_centroid"]], color=(0.0, 0.0, 1.0, 1.0), size=8.0)
+
+        for i, data in env_data.items():
+            if "entry_points" in data and len(data["entry_points"]) > 0:
+                entry_pts = data["entry_points"]
+                tumor_center = data["tumor_centroid"]
+                vessel_points = data["vessel_points"]
+                scored_paths = []
+                for entry_pt in entry_pts:
+                    collision_score, collision_ratio = collision_scoring(entry_pt, tumor_center, vessel_points)
+                    scored_paths.append({"entry_point": entry_pt,
+                                        "score": collision_score,
+                                        "ratio": collision_ratio})
+
+                top_paths = sorted(scored_paths, key=lambda x: x["score"])[:10]
+                # env_data[i]["top_entry_points"] = top_paths
+                data["top_entry_points"] = top_paths
+
+        for i, data in env_data.items():
+            if "top_entry_points" in data and len(data["top_entry_points"]) > 0:
+                for entry_pt in data["top_entry_points"]:
+                    draw_points([entry_pt["entry_point"]], color=(0.0, 1.0, 0.0, 1.0), size=8.0)
+                    draw_points([data["tumor_centroid"]], color=(1.0, 1.0, 0.0, 1.0), size=8.0)
+                    p1 = np.array(entry_pt["entry_point"]) 
+                    p2 = np.array(data["tumor_centroid"])
+                    draw_lines(p1, p2, color="green")
+                    print(f"[ENV {i}] Drawing line from {p1} to {p2}")
+
+        entry_points_np = np.array([data["top_entry_points"][0]["entry_point"] for data in env_data.values()])
+        tumor_centroids_np = np.array([data["tumor_centroid"] for data in env_data.values()])
+        entry_points = torch.tensor(entry_points_np, dtype=torch.float32)
+        tumor_centroids = torch.tensor(tumor_centroids_np, dtype=torch.float32)
+        print("[LOG]: Entry points: ", entry_points)
+        print("[LOG]: Tumor centroids: ", tumor_centroids)
+
+        positions, quaternions = batch_get_start_poses(entry_points, tumor_centroids)
+        positions = positions.to(device=sim.device)
+        quaternions = quaternions.to(device=sim.device)
+        print("[LOG]: POSE : ", positions, quaternions)
+    
+    else:
+        tumor_positions = []
+        tumor_quaternions = []
+        tumor_centroids = []
+        top_entry_points = []    
+        start_positions = []
+        start_quaternions = []
+        # Read Tumor Dataset Pickle and get entry points and start poses
+        data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100.pkl")    
+        for i in range(min(num_envs, len(data))):
+            print(f"[INFO] Loading data for env {i}")
+            env_data = data[i]
+            for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
+                assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
+            tumor_positions.append(env_data["tumor_position"])
+            tumor_quaternions.append(env_data["tumor_quat"])
+            tumor_centroids.append(env_data["tumor_centroid"])
+            top_entry_points.append(env_data["top_entry_points"])
+            start_positions.append(env_data["start_pose"]["position"])
+            start_quaternions.append(env_data["start_pose"]["quaternion"])
+            
         try:
-            entry_pts = get_entry_points(data["skull_points"], data["tumor_centroid"])
-            data["entry_points"] = entry_pts
-            #print(f"[ENV {i}] Entry points found: {len(entry_pts)}")
+            tumor.set_local_poses(torch.tensor(np.array(tumor_positions), dtype=torch.float32), torch.tensor(np.array(tumor_quaternions), dtype=torch.float32))
+            print(tumor.get_local_poses())
         except Exception as e:
-            print(f"[ERROR] ENV {i}: Failed to compute entry points: {e}")
-            data["entry_points"] = []
-
-    for i, data in env_data.items():
-        if "entry_points" in data and len(data["entry_points"]) > 0:
-            draw_points(data["entry_points"], color=(1.0, 0.0, 0.0, 1.0), size=4.0)
-        if "tumor_centroid" in data and len(data["tumor_centroid"]) > 0:
-            draw_points([data["tumor_centroid"]], color=(0.0, 0.0, 1.0, 1.0), size=8.0)
-
-    for i, data in env_data.items():
-        if "entry_points" in data and len(data["entry_points"]) > 0:
-            entry_pts = data["entry_points"]
-            tumor_center = data["tumor_centroid"]
-            vessel_points = data["vessel_points"]
-            scored_paths = []
-            for entry_pt in entry_pts:
-                collision_score, collision_ratio = collision_scoring(entry_pt, tumor_center, vessel_points)
-                scored_paths.append({"entry_point": entry_pt,
-                                     "score": collision_score,
-                                     "ratio": collision_ratio})
-
-            top_paths = sorted(scored_paths, key=lambda x: x["score"])[:10]
-            # env_data[i]["top_entry_points"] = top_paths
-            data["top_entry_points"] = top_paths
-
-    for i, data in env_data.items():
-        if "top_entry_points" in data and len(data["top_entry_points"]) > 0:
-            for entry_pt in data["top_entry_points"]:
-                draw_points([entry_pt["entry_point"]], color=(0.0, 1.0, 0.0, 1.0), size=8.0)
-                draw_points([data["tumor_centroid"]], color=(1.0, 1.0, 0.0, 1.0), size=8.0)
-                p1 = np.array(entry_pt["entry_point"]) 
-                p2 = np.array(data["tumor_centroid"])
-                draw_lines(p1, p2, color="green")
-                print(f"[ENV {i}] Drawing line from {p1} to {p2}")
-
-    entry_points_np = np.array([data["top_entry_points"][0]["entry_point"] for data in env_data.values()])
-    tumor_centroids_np = np.array([data["tumor_centroid"] for data in env_data.values()])
-    entry_points = torch.tensor(entry_points_np, dtype=torch.float32)
-    tumor_centroids = torch.tensor(tumor_centroids_np, dtype=torch.float32)
-    print("[LOG]: Entry points: ", entry_points)
-    print("[LOG]: Tumor centroids: ", tumor_centroids)
-
-    positions, quaternions = batch_get_start_poses(entry_points, tumor_centroids)
-    positions = positions.to(device=sim.device)
-    quaternions = quaternions.to(device=sim.device)
-    print("[LOG]: POSE : ", positions, quaternions)
+            print(f"[ERROR] ENV {i}: Failed to set tumor pose: {e}")
+            pass
 
     holder_pos_trch = torch.zeros((num_envs, 3), dtype=torch.float64, device=sim.device)
     holder_quat_trch = torch.zeros((num_envs, 4), dtype=torch.float64, device=sim.device)
@@ -691,8 +726,8 @@ def main():
             T_tooltip_to_holder = torch.linalg.inv(T_holder_to_tooltip)
             
             for i in range(num_envs):
-                tooltip_pos = positions[i]
-                tooltip_quat = quaternions[i]
+                tooltip_pos = start_positions[i]
+                tooltip_quat = start_quaternions[i]
                 tooltip_pos_world = tooltip_pos
                 T_world_tooltip = make_transform(tooltip_pos_world, tooltip_quat)
 
