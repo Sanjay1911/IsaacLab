@@ -39,7 +39,7 @@ UR5_CFG = ArticulationCfg(
     actuators={
         "arm": ImplicitActuatorCfg(
             joint_names_expr=[".*"],
-            velocity_limit=1.0,
+            velocity_limit_sim=1.0,
             effort_limit=None,
             stiffness=None,
             damping=None,
