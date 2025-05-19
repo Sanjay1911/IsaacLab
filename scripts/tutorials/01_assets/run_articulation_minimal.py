@@ -38,7 +38,7 @@ import numpy as np
 from pxr import UsdGeom, UsdPhysics, Gf
 import omni.log
 import omni.physics.tensors.impl.api as physx
-import omni.replicator.core as rep
+#import omni.replicator.core as rep
 import trimesh
 from scipy.spatial import cKDTree
 from scipy.interpolate import RBFInterpolator
@@ -46,7 +46,9 @@ import open3d as o3d
 import math, datetime
 from typing import List, Tuple
 from scipy.spatial.transform import Rotation as R
+import pprint
 import isaacsim.core.utils.prims as prim_utils
+from isaacsim.core.cloner import GridCloner
 from isaacsim.util.debug_draw import _debug_draw
 import isaaclab.sim as sim_utils
 from isaaclab.scene import InteractiveScene
@@ -74,6 +76,7 @@ SCORE_THRESHOLD = 300
 CAMERA_SAVE = False
 SIM = True
 MODE = "NONE"  # "RAYCAST" or None
+ENV_SPACING = 0.5
 all_lines = []
 all_collisions = []
 all_entry_points = []
@@ -225,6 +228,12 @@ def batch_get_start_poses_old(entries: torch.Tensor, tumor: torch.Tensor):
             quaternions[i] = torch.cat([w.unsqueeze(0), xyz])
 
     return entries, quaternions
+
+
+def apply_scene_offsets(positions, num_envs, spacing=ENV_SPACING):
+    cloner = GridCloner(spacing=spacing)
+    offsets, _ = cloner.get_clone_transforms(num_envs)
+    return np.array(positions) + offsets
 
 
 def make_transform(position, quaternion):
@@ -533,13 +542,17 @@ def main():
         │   → Computed entry pose for the robot end effector
     """
     # Load kit helper
-    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device, use_fabric=False)
+    sim_cfg = sim_utils.SimulationCfg(dt=0.01, device=args_cli.device, use_fabric=True)
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=32, env_spacing=0.0)
+    scene_cfg = MinimalSceneCfg(num_envs=72, env_spacing=ENV_SPACING)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
+    mesh_prim = sim_utils.find_matching_prims(prim_path_regex="/World/envs/env_.*/Tumor")
+    for prim in mesh_prim:
+        print("[INFO] Mesh Prim: ", prim, prim.GetTypeName())
+        print("[INFO] Mesh Prim Children: ", prim.GetAllChildren())
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
     frame_marker_cfg.markers["frame"].scale = (0.015, 0.015, 0.015)
     needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/needle"))
@@ -555,6 +568,8 @@ def main():
     print("Needle orientation (quat):", needle_quat)
     camera = scene["raycast_camera"]
     tumor = scene["tumor"]
+    tumor = scene["tumor"]
+    print("[LOG] Tumor Type: ", type(tumor))
     env_data = {}
     print(camera._view)
   # returns torch.Tensor of positions
@@ -636,26 +651,106 @@ def main():
         tumor_positions = []
         tumor_quaternions = []
         tumor_centroids = []
+        entry_points = []
         top_entry_points = []    
         start_positions = []
         start_quaternions = []
         # Read Tumor Dataset Pickle and get entry points and start poses
-        data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100.pkl")    
+        data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_cleaned.pkl")    
         for i in range(min(num_envs, len(data))):
             print(f"[INFO] Loading data for env {i}")
-            env_data = data[i]
-            for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
-                assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
-            tumor_positions.append(env_data["tumor_position"])
-            tumor_quaternions.append(env_data["tumor_quat"])
-            tumor_centroids.append(env_data["tumor_centroid"])
-            top_entry_points.append(env_data["top_entry_points"])
-            start_positions.append(env_data["start_pose"]["position"])
-            start_quaternions.append(env_data["start_pose"]["quaternion"])
-            
+            try:
+                env_data = data[i]
+                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
+                    assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
+                tumor_positions.append(env_data["tumor_position"])
+                tumor_quaternions.append(env_data["tumor_quat"])
+                tumor_centroids.append(env_data["tumor_centroid"])
+                entry_points.append(env_data["entry_points"])
+                top_entry_points.append(env_data["top_entry_points"])
+                start_positions.append(env_data["start_pose"]["position"])
+                start_quaternions.append(env_data["start_pose"]["quaternion"])
+            except KeyError as e:
+                print(f"[ERROR] ENV {i}: Missing key {e}")
+                continue
+            except AssertionError as e:
+                print(f"[ERROR] ENV {i}: {e}")
+                continue
+            except Exception as e:
+                print(f"[ERROR] ENV {i}: Failed to load data: {e}")
+                continue
+        
+        print("Entry points at env 0:", entry_points[0])
+        print("Length of start positions:", len(start_positions), num_envs)
+        cloner = GridCloner(spacing=ENV_SPACING)
+        offsets, _ = cloner.get_clone_transforms(num_envs)
+        
+        for env_id, points in enumerate(entry_points):
+            #print(f"[INFO] Entry points for env {env_id}: {points}")
+            try:
+                # Apply offset to each point in current env
+                offset = offsets[env_id]  # shape (3,)
+                offset_points = points + offset  # (N, 3) + (3,) → (N, 3)
+                for point in offset_points:
+                    draw_points([point], color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+                    #print(f"[INFO] Drawing offset entry point {point} for env {env_id}")
+            except Exception as e:
+                print(f"[ERROR] Failed to draw entry points for env {env_id}: {e}")
+                continue
+
         try:
-            tumor.set_local_poses(torch.tensor(np.array(tumor_positions), dtype=torch.float32), torch.tensor(np.array(tumor_quaternions), dtype=torch.float32))
+            for env_id, points in enumerate(tumor_centroids):
+                offset = offsets[env_id]  # shape (3,)
+                offset_points = points + offset  # (N, 3) + (3,) → (N, 3)
+                draw_points([offset_points], color=(0.0, 0.0, 1.0, 1.0), size=4.0)        
+        except Exception as e:
+            print(f"[ERROR] Failed to draw tumor centroids: {e}")
+            pass
+
+        try:
+            for env_id, top_points in enumerate(top_entry_points):
+                for i in range(len(top_points)):
+                    offset = offsets[env_id]  # shape (3,)
+                    offset_points = top_points[i]["entry_point"] + offset  # (N, 3) + (3,) → (N, 3)
+                    draw_points([offset_points], color=(0.0, 1.0, 0.0, 1.0), size=4.0)
+        except Exception as e:
+            print(f"[ERROR] Failed to draw top entry points because: {e}")
+
+        try:
+            for env_id, top_points in enumerate(top_entry_points):
+                tumor_center = tumor_centroids[env_id]
+                offset = offsets[env_id]  # shape (3,)
+
+                for i in range(len(top_points)):
+                    entry_point = top_points[i]["entry_point"]
+                    p1 = entry_point + offset
+                    p2 = tumor_center + offset
+
+                    draw_lines(p1, p2, color="green")
+                    #print(f"[INFO] Drawing line from {p1} to {p2} in env {env_id}")
+        except Exception as e:
+            print(f"[ERROR] Failed to draw lines: {e}")
+
+        try:
+            start_positions = apply_scene_offsets(start_positions, num_envs)
+            #print("New Start positions:", start_positions)
+        except Exception as e:
+            print(f"[ERROR] ENV {i}: Failed to apply scene offsets: {e}")
+
+        try:
+            print("-------------------")
+            tumor_positions_tensor = torch.tensor(np.array(tumor_positions), dtype=torch.float32)
+            tumor_quaternions_tensor = torch.tensor(np.array(tumor_quaternions), dtype=torch.float32)
+            print("Tumor positions:", tumor_positions_tensor.shape)
+            assert tumor_positions_tensor.shape[0] == num_envs
+            assert tumor_quaternions_tensor.shape[0] == num_envs
+            poses_pos, poses_quat = tumor.get_local_poses()
+            #print("Tumor Pose Positions Shape:", poses_pos.shape)
+            #print("Tumor Pose Quaternions Shape:", poses_quat.shape)
+            #print("Tumor Position Tensor:", poses_pos)
+            tumor.set_local_poses(tumor_positions_tensor, tumor_quaternions_tensor)
             print(tumor.get_local_poses())
+            print("-------------------")
         except Exception as e:
             print(f"[ERROR] ENV {i}: Failed to set tumor pose: {e}")
             pass
