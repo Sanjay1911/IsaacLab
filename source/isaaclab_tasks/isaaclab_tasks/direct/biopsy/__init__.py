@@ -10,6 +10,7 @@ import gymnasium as gym
 
 from . import agents
 
+from . import biopsy_preop
 ##
 # Register Gym environments.
 ##
