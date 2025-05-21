@@ -127,6 +127,14 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
 
 class BiopsyDirectEnv(DirectRLEnv):
     """Direct RL environment for the biopsy task."""
+    # pre-physics step calls
+    #   |-- _pre_physics_step(action)
+    #   |-- _apply_action()
+    # post-physics step calls
+    #   |-- _get_dones()
+    #   |-- _get_rewards()
+    #   |-- _reset_idx(env_ids)
+    #   |-- _get_observations()
 
     cfg : BiopsyDirectEnvCfg
     preop : biopsy_preop.BiopsyPreop
@@ -254,10 +262,21 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         #refresh intermediate variables so that _get_observations can use them
         self._compute_intermediate_values(env_ids)
+
     def _get_dones(self):
         pass
 
     def _get_observations(self):
+        """
+        Get the observations for the environment. This includes:
+        a) robot joint positions
+        b) robot joint velocities
+        c) end-effector position and orientation
+        d) distance to the tumor centroid
+        e) top start poses
+        f) visual observations from the raycaster camera
+        g) collision scores
+        """
         pass
 
     def _get_rewards(self):
