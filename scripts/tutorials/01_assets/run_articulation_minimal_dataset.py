@@ -604,15 +604,20 @@ def main():
         if len(top_paths) == 0:
             print(f"[SKIP] Tumor {i}: No valid top paths")
             continue
-
-        # Convert top entry and centroid to tensors for pose calc
-        top_entry_point_tensor = torch.tensor([top_paths[0]["entry_point"]], dtype=torch.float32)
+        start_pose = []
         tumor_centroid_tensor = torch.tensor([tumor_centroid], dtype=torch.float32)
+        # Convert top entry and centroid to tensors for pose calc
+        for j in range(len(top_paths)):
+            top_entry_point_tensor = torch.tensor([top_paths[j]["entry_point"]], dtype=torch.float32)
+            position, quaternion = batch_get_start_poses(top_entry_point_tensor, tumor_centroid_tensor)
+            start_pose.append({"position": position.squeeze(0), "quaternion": quaternion.squeeze(0), "score": top_paths[j]["score"]})
+            print(f"Successfully computed start pose for entry point {j} of tumor {i}: {start_pose[j]}")
+        
 
         # Compute needle start pose (from entry to tumor)
-        position, quaternion = batch_get_start_poses(top_entry_point_tensor, tumor_centroid_tensor)
-        position = position[0].cpu().numpy()
-        quaternion = quaternion[0].cpu().numpy()
+        
+        # position = position[0].cpu().numpy()
+        # quaternion = quaternion[0].cpu().numpy()
 
         # Store
         dataset[i] = {
@@ -621,16 +626,13 @@ def main():
             "tumor_centroid": tumor_centroid,
             "entry_points": np.array(entry_pts),
             "top_entry_points": top_paths,
-            "start_pose": {
-                "position": position,
-                "quaternion": quaternion,
-            },
+            "start_pose": start_pose,
         }
 
         print(f"[WRITE] ✅ Tumor #{i:03} | Pos: {tumor_positions[i]}, Quat: {tumor_quats[i]}")
 
     # Save dataset
-    dump_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100.pkl", dataset)
+    dump_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205.pkl", dataset)
     print("✅ Finished saving dataset with 100 tumor entries.")
 
     holder_pos_trch = torch.zeros((num_envs, 3), dtype=torch.float64, device=sim.device)

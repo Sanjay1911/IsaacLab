@@ -38,7 +38,7 @@ import numpy as np
 from pxr import UsdGeom, UsdPhysics, Gf
 import omni.log
 import omni.physics.tensors.impl.api as physx
-#import omni.replicator.core as rep
+import omni.replicator.core as rep
 import trimesh
 from scipy.spatial import cKDTree
 from scipy.interpolate import RBFInterpolator
@@ -546,7 +546,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=72, env_spacing=ENV_SPACING)
+    scene_cfg = MinimalSceneCfg(num_envs=48, env_spacing=ENV_SPACING)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     mesh_prim = sim_utils.find_matching_prims(prim_path_regex="/World/envs/env_.*/Tumor")
