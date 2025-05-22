@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import torch
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 import math
 import random
 import omni.log
@@ -15,10 +16,10 @@ from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf
 from pxr import UsdGeom
 import isaacsim.core.utils.prims as prim_utils
 from isaacsim.core.cloner import GridCloner
-try:
-    from isaacsim.util.debug_draw import _debug_draw
-except ImportError:
-    from omni.isaac.debug_draw import _debug_draw
+# try:
+#     from isaacsim.util.debug_draw import _debug_draw
+# except ImportError:
+#     from omni.isaac.debug_draw import _debug_draw
 import isaaclab.sim as sim_utils
 from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -93,7 +94,7 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
     episode_length_s = 8.3333  # 500 timesteps
     decimation = 2
-    action_space = 9
+    action_space = 1
     observation_space = 23
     state_space = 0
 
@@ -111,9 +112,9 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     )
 
     #scene
-    scene: MinimalSceneCfg = MinimalSceneCfg(num_envs=48, env_spacing=0.5, replicate_physics=True)
+    scene: MinimalSceneCfg = MinimalSceneCfg(num_envs=48, env_spacing=0.5, replicate_physics=False)
 
-    action_scale = 7.5
+    action_scale = 0.5
     dof_velocity_scale = 0.1
 
     # reward scales
@@ -141,7 +142,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
     def __init__(self, cfg: BiopsyDirectEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-
+        
         def get_env_local_pose(env_pos: torch.Tensor, xformable: UsdGeom.Xformable, device: torch.device):
             """Compute pose in env-local coordinates"""
             world_transform = xformable.ComputeLocalToWorldTransform(0)
@@ -159,11 +160,12 @@ class BiopsyDirectEnv(DirectRLEnv):
             return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
-
+        self.cloner = GridCloner(spacing=self.cfg.scene.env_spacing)
+        self.offsets, _ = self.cloner.get_clone_transforms(self.num_envs)
         # create auxiliary variables for computing applied action, observations and rewards
         self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
-
+        print(f"Robot DOF limits: {self.robot_dof_lower_limits}, {self.robot_dof_upper_limits}")
         self.robot_dof_speed_scales = torch.ones_like(self.robot_dof_lower_limits)
         self.robot_dof_speed_scales[self._robot.find_joints("holder_needle_slider")[0]] = 0.1
         
@@ -173,8 +175,8 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         stage = get_current_stage()
         prim = stage.GetPrimAtPath("/World/envs/env_0/Robot/needle_tool/holder_link")
-        print("Prim: ", prim)
-        print("Is valid:", prim.IsValid())
+        omni.log.info(f"Prim: {prim}")
+        omni.log.info(f"Is valid: {prim.IsValid()}")
 
         holder_pose = get_env_local_pose(
             self.scene.env_origins[0],
@@ -196,10 +198,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.holder_index = self._robot.find_bodies("holder_link")[0][0]
         self.needle_index = self._robot.find_bodies("needle_link")[0][0]
         omni.log.info(f"Link Indices: {self.tooltip_index, self.holder_index, self.needle_index}")
+        self.active_path_idx = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)
+        
+        #self.draw = _debug_draw.acquire_debug_draw_interface()
 
-        self.cloner = GridCloner(spacing=self.cfg.scene.env_spacing)
-        self.draw = _debug_draw.acquire_debug_draw_interface()
-        #read pickled data
+        # read pickled data
         print("Loading tumor data...")
         self.tumor_positions = []
         self.tumor_quaternions = []
@@ -208,7 +211,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.tumor_top_entry_points = []
         self.start_positions = []
         self.start_quaternions = []
-        self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_cleaned.pkl")
+        self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl")
         for i in range(min(self.num_envs, len(self.tumor_pickle))):
             omni.log.info(f"Loading tumor data for env: {i}")
             try:
@@ -220,8 +223,8 @@ class BiopsyDirectEnv(DirectRLEnv):
                 self.tumor_centroids.append(env_data["tumor_centroid"])
                 self.tumor_entry_points.append(env_data["entry_points"])
                 self.tumor_top_entry_points.append(env_data["top_entry_points"])
-                self.start_positions.append(env_data["start_pose"]["position"])
-                self.start_quaternions.append(env_data["start_pose"]["quaternion"])
+                self.start_positions.append([pose["position"] for pose in env_data["start_pose"]])
+                self.start_quaternions.append([pose["quaternion"] for pose in env_data["start_pose"]])
             except KeyError as e:
                 omni.log.warn(f"KeyError: {e} for env {i}. Tumor data may be incomplete.")
             except AssertionError as e:
@@ -229,10 +232,15 @@ class BiopsyDirectEnv(DirectRLEnv):
             except Exception as e:
                 omni.log.warn(f"Exception: {e} for env {i}. Tumor data may be incomplete.")
         
+        print(len(self.start_positions))
         omni.log.info("Tumor data for envs loaded successfully.")
-        self.draw_entry_points()
-        self.draw_path()
-        print("Tumor positions: ", len(self.tumor_positions), self.num_envs)
+        #self.draw_entry_points()
+        #self.draw_path()
+        assert len(self.tumor_positions) == self.num_envs, f"Number of tumor positions {len(self.tumor_positions)} does not match number of envs {self.num_envs}"
+        self.shuffled_tumor_centroids = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
+        self.tooltip_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.tooltip_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.tumor = self.scene["tumor"]
 
     def _setup_scene(self):
         """
@@ -245,28 +253,87 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._robot = Articulation(self.cfg.scene.robot)
         self.scene.articulations["robot"] = self._robot
 
+    def _pre_physics_step(self, actions: torch.Tensor):
+        self.actions = actions.clone().clamp(-1.0, 1.0) 
+        joint_velocities = self.actions * self.cfg.action_scale * self.robot_dof_speed_scales
+        self.robot_dof_targets[:] = joint_velocities
+    
     def _apply_action(self):
         self._robot.set_joint_velocity_target(self.robot_dof_targets)
 
-    def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
+    def _compute_intermediate_values(self, env_ids):
         """
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
         and the observations to be returned to the agent.
         """
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
+        
+        self.tool_tip_pos = self._robot.data.body_pos_w[env_ids, self.tooltip_index]
+        self.tool_tip_quat = self._robot.data.body_quat_w[env_ids, self.tooltip_index]
+
+        #tumor_pos = self.cfg.scene.tumor.
 
     def _reset_idx(self, env_ids):
+        """
+            A) Randomly select a tumor centroid from the list of centroids
+            B) Randomly select a start pose from the list of start poses based on the selected centroid
+            C) Set tooltip position and rotation to the start pose
+            D) Set the robot joint positions to the start pose
+            E) Set the robot joint velocities to zero
+            F) Save the active path index per environment
+        """
         super()._reset_idx(env_ids)
-        # reset robot joint positions
 
-        #refresh intermediate variables so that _get_observations can use them
+        root_state = self._robot.data.default_root_state.clone()
+
+        for env_id in env_ids:
+            offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
+            tumor_idx = random.randint(0, len(self.tumor_pickle) - 1)
+            tumor_data = self.tumor_pickle[tumor_idx]
+            tumor_centroid = torch.tensor(tumor_data["tumor_centroid"], dtype=torch.float32, device=self.device)
+            # Set tumor pose + offset
+            tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device) + offset
+            tumor_quat = torch.tensor(tumor_data["tumor_quat"], dtype=torch.float32, device=self.device)
+            self.tumor.set_local_poses(tumor_pos.unsqueeze(0), tumor_quat.unsqueeze(0), [env_id])
+            self.shuffled_tumor_centroids[env_id] = tumor_centroid + offset
+            path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
+            start_pose = tumor_data["start_pose"][path_idx]
+            start_pos = start_pose["position"].to(self.device) + offset
+            start_quat = start_pose["quaternion"].to(self.device)
+
+            tooltip_to_holder_pos = torch.tensor([0.02464, -0.00005, -0.0265], dtype=torch.float32, device=self.device)
+            tooltip_to_holder_quat = torch.tensor(R.from_euler("xyz", [0, 0, 1.5707]).as_quat(canonical=False), dtype=torch.float32, device=self.device)
+
+            # Invert to get Holder → Tooltip (needed for chaining backwards)
+            holder_to_tooltip_quat, holder_to_tooltip_pos = tf_inverse(tooltip_to_holder_quat, tooltip_to_holder_pos)
+
+            tooltip_quat, tooltip_pos = start_quat, start_pos  
+
+            tooltip_quat = tooltip_quat.to(dtype=torch.float32)
+            tooltip_pos = tooltip_pos.to(dtype=torch.float32)
+            holder_to_tooltip_quat = holder_to_tooltip_quat.to(dtype=torch.float32)
+            holder_to_tooltip_pos = holder_to_tooltip_pos.to(dtype=torch.float32)
+            # Compute holder pose in world: T_world_holder = T_world_tooltip ∘ T_tooltip→holder
+            ttip_quat, ttip_pos = tf_combine(
+                tooltip_quat, tooltip_pos,
+                holder_to_tooltip_quat, holder_to_tooltip_pos
+            )
+            root_state[env_id, :3] = ttip_pos
+            root_state[env_id, 3:7] = ttip_quat
+            root_state[env_id, 7:] = 0.0 
+            self.active_path_idx[env_id] = path_idx
+
+        self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
+        self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
+
+        # Recompute any intermediate buffers (like tooltip pos, etc.)
         self._compute_intermediate_values(env_ids)
 
     def _get_dones(self):
         pass
 
-    def _get_observations(self):
+    def _get_observations(self):  # TODO: Observations
         """
         Get the observations for the environment. This includes:
         a) robot joint positions
@@ -277,23 +344,32 @@ class BiopsyDirectEnv(DirectRLEnv):
         f) visual observations from the raycaster camera
         g) collision scores
         """
+        to_tumor = self.shuffled_tumor_centroids - self.tooltip_pos  # TODO: tumor centroid - tooltip
+        obs = torch.cat(
+            (
+                self.tooltip_pos,  # tooltip position
+                self.tooltip_rot,  # tooltip rotation
+                self._robot.data.joint_vel * self.cfg.dof_velocity_scale, # joint velocities
+                to_tumor,  # distance from tool tip to tumor centroid1
+            ),
+            dim=-1,
+        )
+        return {"policy": obs}
         pass
 
-    def _get_rewards(self):
+    def _get_rewards(self):  # TODO: Rewards
         pass
 
-    def _get_states(self):
+    def _get_states(self):  # TODO: States
         pass
 
-    def _get_actions(self):
+    def _get_actions(self):  # TODO: Actions
         pass
 
-    def __compute_reward(self):
+    def __compute_reward(self):  # TODO: Rewards
         pass
     
-    def calculate_offsets(self, num_envs: int):
-        offsets, _ = self.cloner.get_clone_transforms(num_envs)
-        return offsets
+    
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
         point_list = [tuple(p) for p in points_np]
@@ -330,7 +406,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         else:
             colors = [color_green for _ in range(b)]
         sizes = [1.0 for _ in range(b)]
-        #print("Drawing line from", start_pose, "to", end_pose)
+        # print("Drawing line from", start_pose, "to", end_pose)
         self.draw.draw_lines(
             start_pose.tolist(),
             end_pose.tolist(),
@@ -342,8 +418,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         for env_id, points in enumerate(self.tumor_entry_points):
             omni.log.info(f"Drawing entry points for env: {env_id}")
             try:
-                offsets = self.calculate_offsets(self.num_envs)
-                offset = offsets[env_id]
+                offset = self.offsets[env_id]
                 offset_points = points + offset
                 for point in offset_points:
                     self.draw_points([point], color=(0.2, 0.8, 0.2, 1.0), size=4.0)
@@ -353,8 +428,7 @@ class BiopsyDirectEnv(DirectRLEnv):
     def draw_tumor_centroids(self):
         try:
             for env_id, points in enumerate(self.tumor_centroids):
-                offsets = self.calculate_offsets(self.num_envs)
-                offset = offsets[env_id]  # shape (3,)
+                offset = self.offsets[env_id]  # shape (3,)
                 offset_points = points + offset  # (N, 3) + (3,) → (N, 3)
                 self.draw_points([offset_points], color=(0.0, 0.0, 1.0, 1.0), size=4.0)        
         except Exception as e:
@@ -364,8 +438,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         try:
             for env_id, top_points in enumerate(self.tumor_top_entry_points):
                 for i in range(len(top_points)):
-                    offsets = self.calculate_offsets(self.num_envs)
-                    offset = offsets[env_id]  # shape (3,)
+                    offset = self.offsets[env_id]  # shape (3,)
                     offset_points = top_points[i]["entry_point"] + offset  # (N, 3) + (3,) → (N, 3)
                     self.draw_points([offset_points], color=(0.0, 1.0, 0.0, 1.0), size=4.0)
         except Exception as e:
@@ -375,8 +448,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         try:
             for env_id, top_points in enumerate(self.tumor_top_entry_points):
                 tumor_center = self.tumor_centroids[env_id]
-                offsets = self.calculate_offsets(self.num_envs)
-                offset = offsets[env_id]  # shape (3,)
+                offset = self.offsets[env_id]  # shape (3,)
 
                 for i in range(len(top_points)):
                     entry_point = top_points[i]["entry_point"]
