@@ -73,7 +73,7 @@ from isaaclab.utils.math import quat_mul
 draw = _debug_draw.acquire_debug_draw_interface()
 DIST_THRESHOLD = 0.005  
 SCORE_THRESHOLD = 300
-CAMERA_SAVE = False
+CAMERA_SAVE = True
 SIM = True
 MODE = "NONE"  # "RAYCAST" or None
 ENV_SPACING = 0.5
@@ -123,11 +123,12 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 
     raycast_camera = RayCasterCameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
-        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor", "{ENV_REGEX_NS}/Vessel"],
+        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
         update_period=0.1,
         offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
         data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
         debug_vis=False,
+        max_distance=0.01,
         pattern_cfg=patterns.PinholeCameraPatternCfg(
             focal_length=24.0,
             horizontal_aperture=20.955,
@@ -135,6 +136,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
             width=640,
         ),
     )
+
 
 def batch_get_start_poses(entries: torch.Tensor, tumors: torch.Tensor):
     """
@@ -487,6 +489,7 @@ def draw_lines(start, end, color):
     )
 
 def draw_points(points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):
+    #draw.clear_points()
     point_list = [tuple(p) for p in points_np]
     colors = [color] * len(point_list)
     sizes = [size] * len(point_list)
@@ -546,7 +549,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=48, env_spacing=ENV_SPACING)
+    scene_cfg = MinimalSceneCfg(num_envs=1, env_spacing=ENV_SPACING)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     mesh_prim = sim_utils.find_matching_prims(prim_path_regex="/World/envs/env_.*/Tumor")
@@ -754,7 +757,7 @@ def main():
         except Exception as e:
             print(f"[ERROR] ENV {i}: Failed to set tumor pose: {e}")
             pass
-
+    
     holder_pos_trch = torch.zeros((num_envs, 3), dtype=torch.float64, device=sim.device)
     holder_quat_trch = torch.zeros((num_envs, 4), dtype=torch.float64, device=sim.device)
     #visualise_new_paths(env_data[0]["vessel_points"])
@@ -776,38 +779,57 @@ def main():
         needle_marker.visualize(needle_pos, needle_quat)
         print("Needle position:", needle_pos)
         print("Needle orientation (quat):", needle_quat)
+        print("camera pose: ", camera.data.pos_w, camera.data.quat_w_world)
         transforms = camera._view.get_transforms()
         pos_w, quat_w = transforms[:, :3], transforms[:, 3:]
         camera_marker.visualize(pos_w, quat_w)
         print("Camera parent position:", pos_w)
         print("Camera parent orientation (quat):", quat_w)
-        # print(camera)
-        # print("Received shape of depth image: ", camera.data.output["distance_to_image_plane"].shape)
+        print("Received shape of depth image: ", camera.data.output["distance_to_image_plane"].shape)
         print("-------------------------------")
         if CAMERA_SAVE:
-                camera_index = 0
-                # note: BasicWriter only supports saving data in numpy format, so we need to convert the data to numpy.
-                single_cam_data = convert_dict_to_backend(
-                    {k: v[camera_index] for k, v in camera.data.output.items()}, backend="numpy"
-                )
-                # Extract the other information
-                single_cam_info = camera.data.info[camera_index]
+            camera_index = 0
+            single_cam_data = convert_dict_to_backend(
+                {k: v[camera_index] for k, v in camera.data.output.items()}, backend="numpy"
+            )
+            single_cam_info = camera.data.info[camera_index]
 
-                # Pack data back into replicator format to save them using its writer
-                rep_output = {"annotators": {}}
-                for key, data, info in zip(single_cam_data.keys(), single_cam_data.values(), single_cam_info.values()):
-                    if info is not None:
-                        rep_output["annotators"][key] = {"render_product": {"data": data, **info}}
-                    else:
-                        rep_output["annotators"][key] = {"render_product": {"data": data}}
-                # Save images
-                rep_output["trigger_outputs"] = {"on_time": camera.frame[camera_index]}
-                rep_writer.write(rep_output)
+            rep_output = {"annotators": {}}
+            for key, data, info in zip(single_cam_data.keys(), single_cam_data.values(), single_cam_info.values()):
+                if info is not None:
+                    rep_output["annotators"][key] = {"render_product": {"data": data, **info}}
+                else:
+                    rep_output["annotators"][key] = {"render_product": {"data": data}}
 
-                # Pointcloud in world frame
-                points_3d_cam = unproject_depth(
-                    camera.data.output["distance_to_image_plane"], camera.data.intrinsic_matrices
-                )
+            rep_output["trigger_outputs"] = {"on_time": camera.frame[camera_index]}
+            #rep_writer.write(rep_output)
+
+            # Unproject to camera frame
+            depth = camera.data.output["distance_to_image_plane"]
+            points_3d_cam = unproject_depth(depth, camera.data.intrinsic_matrices)  # (N, H, W, 3)
+
+            env_id = 0
+            points_cam = points_3d_cam[env_id].reshape(-1, 3)  # (H*W, 3)
+
+            # Apply world transform
+            points_rotated = quat_apply(camera.data.quat_w_world[env_id].unsqueeze(0), points_cam)  # (H*W, 3)
+            points_world = points_rotated + camera.data.pos_w[env_id]  # (H*W, 3)
+
+            # Filter valid depth
+            depth_valid = depth[env_id].squeeze(-1).reshape(-1) > 1e-4
+            points_world = points_world[depth_valid]
+
+            dists = torch.norm(points_world - needle_pos, dim=1)
+
+            mask = dists < 0.05  # distance threshold in meters
+            nearby_points = points_world[mask]
+
+            if nearby_points.shape[0] > 100:
+                idx = torch.randperm(nearby_points.shape[0])[:100]
+                nearby_points = nearby_points[idx]
+
+            draw_points(nearby_points.tolist(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+
         if count % 150 == 0:
             # reset counter
             count = 0
@@ -846,8 +868,9 @@ def main():
             print("[INFO]: Updated Root state: ", root_state)
             joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
             joint_pos += torch.rand_like(joint_pos) * -1
+            joint_vel += torch.rand_like(joint_vel) * -0.001
             robot.write_joint_state_to_sim(joint_pos, joint_vel)
-            robot.reset()
+            #robot.reset()
             camera.update(sim_dt)   
             
         print("[INFO]: Resetting robot state...")

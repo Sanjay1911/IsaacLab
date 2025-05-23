@@ -201,7 +201,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.active_path_idx = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)
         
         #self.draw = _debug_draw.acquire_debug_draw_interface()
-
+        self.camera = self.scene["raycast_camera"]
         # read pickled data
         print("Loading tumor data...")
         self.tumor_positions = []
@@ -355,9 +355,14 @@ class BiopsyDirectEnv(DirectRLEnv):
             dim=-1,
         )
         return {"policy": obs}
-        pass
 
-    def _get_rewards(self):  # TODO: Rewards
+    def _get_rewards(self):  # TODO: to get calculated Rewards
+        """
+        Get the rewards for the environment. This includes:
+        a) RayCaster Camera reward based on distance to image plane and distance to camera
+
+        """
+        self.__compute_reward()
         pass
 
     def _get_states(self):  # TODO: States
@@ -366,10 +371,8 @@ class BiopsyDirectEnv(DirectRLEnv):
     def _get_actions(self):  # TODO: Actions
         pass
 
-    def __compute_reward(self):  # TODO: Rewards
+    def __compute_reward(self):  # TODO: actual Rewards
         pass
-    
-    
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
         point_list = [tuple(p) for p in points_np]
