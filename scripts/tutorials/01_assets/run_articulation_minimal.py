@@ -48,6 +48,7 @@ from typing import List, Tuple
 from scipy.spatial.transform import Rotation as R
 import pprint
 import isaacsim.core.utils.prims as prim_utils
+import isaacsim.core.utils.stage as stage_utils
 from isaacsim.core.cloner import GridCloner
 from isaacsim.util.debug_draw import _debug_draw
 import isaaclab.sim as sim_utils
@@ -73,10 +74,11 @@ from isaaclab.utils.math import quat_mul
 draw = _debug_draw.acquire_debug_draw_interface()
 DIST_THRESHOLD = 0.005  
 SCORE_THRESHOLD = 300
-CAMERA_SAVE = True
+CAMERA_SAVE = False
 SIM = True
 MODE = "NONE"  # "RAYCAST" or None
 ENV_SPACING = 0.5
+INCLUDE_SHIFT = False  # Whether to include brain shift in the simulation
 all_lines = []
 all_collisions = []
 all_entry_points = []
@@ -758,6 +760,21 @@ def main():
             print(f"[ERROR] ENV {i}: Failed to set tumor pose: {e}")
             pass
     
+    if INCLUDE_SHIFT:
+        brain_shift_data = []
+        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/precomputed_brain_deformations_top10.pkl")
+        print("[INFO] Loaded brain shift data with length:", len(shift_data))
+        for env_id in range(min(num_envs, len(shift_data))):
+            try:
+                print(f"[INFO] Extracting top-1 shift steps for env {env_id}")
+                env = shift_data[env_id]
+                top_entry = env[0]  # top-ranked entry out of 10
+                for step_id in range(10):
+                    brain_shift_data.append(top_entry[step_id])
+            except Exception as e:
+                print(f"[ERROR] Failed to extract for env {env_id}: {e}")
+
+
     holder_pos_trch = torch.zeros((num_envs, 3), dtype=torch.float64, device=sim.device)
     holder_quat_trch = torch.zeros((num_envs, 4), dtype=torch.float64, device=sim.device)
     #visualise_new_paths(env_data[0]["vessel_points"])
@@ -767,6 +784,7 @@ def main():
     # Create replicator writer
     output_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", "ray_caster_camera_lab", date)
     rep_writer = rep.BasicWriter(output_dir=output_dir, frame_padding=3)
+    shift_step = 0
     sim_dt = sim.get_physics_dt()
     count = 0
     # Simulation loop
@@ -777,16 +795,16 @@ def main():
         needle_pos = needle_pose_w[:, :3]
         needle_quat = needle_pose_w[:, 3:7]
         needle_marker.visualize(needle_pos, needle_quat)
-        print("Needle position:", needle_pos)
-        print("Needle orientation (quat):", needle_quat)
-        print("camera pose: ", camera.data.pos_w, camera.data.quat_w_world)
+        # print("Needle position:", needle_pos)
+        # print("Needle orientation (quat):", needle_quat)
+        # print("camera pose: ", camera.data.pos_w, camera.data.quat_w_world)
         transforms = camera._view.get_transforms()
         pos_w, quat_w = transforms[:, :3], transforms[:, 3:]
         camera_marker.visualize(pos_w, quat_w)
-        print("Camera parent position:", pos_w)
-        print("Camera parent orientation (quat):", quat_w)
-        print("Received shape of depth image: ", camera.data.output["distance_to_image_plane"].shape)
-        print("-------------------------------")
+        # print("Camera parent position:", pos_w)
+        # print("Camera parent orientation (quat):", quat_w)
+        # print("Received shape of depth image: ", camera.data.output["distance_to_image_plane"].shape)
+        #print("-------------------------------")
         if CAMERA_SAVE:
             camera_index = 0
             single_cam_data = convert_dict_to_backend(
@@ -830,6 +848,117 @@ def main():
 
             draw_points(nearby_points.tolist(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
 
+        # if INCLUDE_SHIFT and count % 200 == 0:
+        #     print(f"[INFO] Count: {count}, Shift Step: {shift_step}")
+        #     if shift_step < 10:
+        #         print(f"[INFO] Applying shift step {shift_step}")
+        #         deformed_vertices = brain_shift_data[shift_step]
+        #         print(f"[INFO] Deformed vertices shape: {len(deformed_vertices)}")
+        #         if len(deformed_vertices) == 0:
+        #             print(f"[ERROR] No deformed vertices available for shift step {shift_step}")
+        #             shift_step += 1
+        #             continue
+        #         for i in range(num_envs):
+        #             try:
+        #                 stage = stage_utils.get_current_stage()
+        #                 raw_prim = stage.GetPrimAtPath(f"/World/envs_{i}/Vessel")
+        #                 prim = UsdGeom.Mesh(stage.GetPrimAtPath(f"/World/envs_{i}/Vessel"))
+        #                 print(f"[INFO] Found prim at /env_{i}/Vessel: {type(prim),type(raw_prim)}")
+        #                 if not prim or not prim.GetPrim().IsA(UsdGeom.Mesh):
+        #                     print(f"[ERROR] Prim at env_{i}/Vessel is not a valid UsdGeom.Mesh!")
+        #                     continue
+        #                 print(f"[INFO] Found prim: {prim}")
+        #             except Exception as e:
+        #                 print(f"[ERROR] Failed to get stage or prim: {e}")
+        #                 continue
+                    
+        #             # Get reference to the points attribute of your mesh
+        #             # Example: points_attr = UsdGeom.Mesh(mesh_paths[i]).GetPointsAttr()
+        #             points_attr = prim.GetPointsAttr()
+        #             if not points_attr.IsDefined():
+        #                 print(f"[ERROR] points attribute is not defined on /env_{i}/Vessel")
+        #                 continue
+
+        #             # Convert to Gf.Vec3f and assign
+        #             usd_points = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in deformed_vertices]
+        #             points_attr.Set(usd_points)
+        #             points_np = np.array([[v[0], v[1], v[2]] for v in deformed_vertices], dtype=np.float32)
+        #             #draw.clear_points()
+        #             draw_points(points_np, color=(1.0, 1.0, 1.0, 1.0), size=26.0)
+        #         print(f"[INFO] Deformed vertices applied for shift step {shift_step} in all environments.")
+        #         shift_step += 1
+        #     else:
+        #         print("[INFO] No more shift steps available.")
+        #     scene.write_data_to_sim()
+        #     sim.step()
+        #     scene.update(sim_dt)
+
+    if INCLUDE_SHIFT and count % 200 == 0:
+        print(f"[INFO] Count: {count}, Shift Step: {shift_step}")
+        if shift_step < 10:
+            print(f"[INFO] Applying shift step {shift_step}")
+            deformed_vertices = brain_shift_data[shift_step]
+            print(f"[INFO] Deformed vertices shape: {len(deformed_vertices)}")
+
+            if len(deformed_vertices) == 0:
+                print(f"[ERROR] No deformed vertices available for shift step {shift_step}")
+                shift_step += 1
+
+            for i in range(num_envs):
+                try:
+                    stage = stage_utils.get_current_stage()
+                    raw_prim = stage.GetPrimAtPath(f"/World/envs_{i}/Vessel")
+                    prim = UsdGeom.Mesh(raw_prim)
+                    print(f"[INFO] Found prim at /env_{i}/Vessel: {type(prim), type(raw_prim)}")
+
+                    if not prim or not prim.GetPrim().IsA(UsdGeom.Mesh):
+                        print(f"[ERROR] Prim at env_{i}/Vessel is not a valid UsdGeom.Mesh!")
+                        continue
+                    if not prim.GetPointsAttr().IsDefined():
+                        print(f"[ERROR] points attribute is not defined on /env_{i}/Vessel")
+                        continue
+
+                    # Fetch original points
+                    original_points = prim.GetPointsAttr().Get()
+                    original_np = np.array([[p[0], p[1], p[2]] for p in original_points], dtype=np.float32)
+
+                    # Prepare new deformed points
+                    usd_points = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in deformed_vertices]
+                    points_attr = prim.GetPointsAttr()
+                    points_attr.Set(usd_points)
+
+                    # Convert new to np
+                    new_np = np.array([[v[0], v[1], v[2]] for v in deformed_vertices], dtype=np.float32)
+
+                    # Compare: % change and displacement
+                    if original_np.shape == new_np.shape:
+                        displacement = np.linalg.norm(new_np - original_np, axis=1)
+                        changed_mask = displacement > 1e-5
+                        changed_percent = 100.0 * np.sum(changed_mask) / displacement.shape[0]
+                        print(f"[INFO] [env_{i}] Vertices changed: {changed_percent:.2f}%")
+                        print(f"[INFO] [env_{i}] Mean displacement: {np.mean(displacement):.6f}")
+                        print(f"[INFO] [env_{i}] Max displacement:  {np.max(displacement):.6f}")
+                    else:
+                        print(f"[ERROR] Mismatch in vertex count for env_{i}: {original_np.shape} vs {new_np.shape}")
+
+                    # Debug draw
+                    draw_points(new_np, color=(1.0, 1.0, 1.0, 1.0), size=26.0)
+
+                except Exception as e:
+                    print(f"[ERROR] Failed to apply deformation or draw for env {i}: {e}")
+                    continue
+
+            print(f"[INFO] Deformed vertices applied for shift step {shift_step} in all environments.")
+            shift_step += 1
+        else:
+            print("[INFO] No more shift steps available.")
+
+        # Update scene
+        scene.write_data_to_sim()
+        sim.step()
+        scene.update(sim_dt)
+
+
         if count % 150 == 0:
             # reset counter
             count = 0
@@ -855,17 +984,17 @@ def main():
                 holder_quat_trch[i] = holder_quat
 
             root_state = robot.data.default_root_state.clone()
-            print("[INFO]: Default root state: ", root_state) 
+            #print("[INFO]: Default root state: ", root_state) 
             holder_pos_trch.to(device=sim.device)
             holder_quat_trch.to(device=sim.device)
             root_state[:, :3] = holder_pos_trch
             root_state[:, 3:7] = holder_quat_trch
             # set really slow velocity
             root_state[:, 7:] = torch.zeros_like(root_state[:, 7:])
-            print("[INFO]: Root state: ", root_state[0])
+            #print("[INFO]: Root state: ", root_state[0])
             robot.write_root_pose_to_sim(root_state[:, :7])
             robot.write_root_velocity_to_sim(root_state[:, 7:])
-            print("[INFO]: Updated Root state: ", root_state)
+            #print("[INFO]: Updated Root state: ", root_state)
             joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
             joint_pos += torch.rand_like(joint_pos) * -1
             joint_vel += torch.rand_like(joint_vel) * -0.001
@@ -873,8 +1002,8 @@ def main():
             #robot.reset()
             camera.update(sim_dt)   
             
-        print("[INFO]: Resetting robot state...")
-        # print(scene["raycast_camera"])
+        #print("[INFO]: Resetting robot state...")
+        #print(scene["raycast_camera"])
         scene.write_data_to_sim()
         sim.step()
         count += 1
