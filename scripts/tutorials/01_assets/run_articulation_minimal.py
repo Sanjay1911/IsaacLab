@@ -42,6 +42,7 @@ import omni.replicator.core as rep
 import trimesh
 from scipy.spatial import cKDTree
 from scipy.interpolate import RBFInterpolator
+from scipy.ndimage import rotate
 import open3d as o3d
 import math, datetime
 from typing import List, Tuple
@@ -116,7 +117,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+            file_path="/home/sanjay/thesis_replications/curobo/src/curobo/content/assets/scene/tumr.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -125,7 +126,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 
     raycast_camera = RayCasterCameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
-        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
+        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel","{ENV_REGEX_NS}/Tumor"],
         update_period=0.1,
         offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
         data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
@@ -551,7 +552,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=1, env_spacing=ENV_SPACING)
+    scene_cfg = MinimalSceneCfg(num_envs=8, env_spacing=ENV_SPACING)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     mesh_prim = sim_utils.find_matching_prims(prim_path_regex="/World/envs/env_.*/Tumor")
@@ -572,7 +573,6 @@ def main():
     print("Needle position:", needle_pos)
     print("Needle orientation (quat):", needle_quat)
     camera = scene["raycast_camera"]
-    tumor = scene["tumor"]
     tumor = scene["tumor"]
     print("[LOG] Tumor Type: ", type(tumor))
     env_data = {}
@@ -804,8 +804,21 @@ def main():
         # print("Camera parent position:", pos_w)
         # print("Camera parent orientation (quat):", quat_w)
         # print("Received shape of depth image: ", camera.data.output["distance_to_image_plane"].shape)
+        print("Received shape of depth image: ", camera.data.output["distance_to_image_plane"].shape)
+        distances = camera.data.output["distance_to_camera"]
+        H, W = 420, 640
+        center_distance = distances[0, H//2, W//2, 0]  # (N, H, W, C) shape
+        print("Euclidean distances (sample):", center_distance)  # center pixel
+        valid = ~torch.isinf(distances)
+        num_valid = valid.sum().item()
+        total_rays = distances.numel()
+        print(f"[DEBUG] Valid rays: {num_valid}/{total_rays}")
+        mean_distance = distances[valid].mean()
+        print("Mean distance (valid hits):", mean_distance.item())
+        with open(os.path.join(output_dir, "depth_info.csv"), "a") as f:
+            f.write(f"{count},{mean_distance.item()},{center_distance.item()},{num_valid/total_rays},{100.0 * num_valid / total_rays:.2f}%\n")
         #print("-------------------------------")
-        if CAMERA_SAVE:
+        if CAMERA_SAVE and count % 25 == 0:
             camera_index = 0
             single_cam_data = convert_dict_to_backend(
                 {k: v[camera_index] for k, v in camera.data.output.items()}, backend="numpy"
@@ -814,39 +827,40 @@ def main():
 
             rep_output = {"annotators": {}}
             for key, data, info in zip(single_cam_data.keys(), single_cam_data.values(), single_cam_info.values()):
+                data = np.rot90(data, k=1)
                 if info is not None:
                     rep_output["annotators"][key] = {"render_product": {"data": data, **info}}
                 else:
                     rep_output["annotators"][key] = {"render_product": {"data": data}}
 
             rep_output["trigger_outputs"] = {"on_time": camera.frame[camera_index]}
-            #rep_writer.write(rep_output)
+            rep_writer.write(rep_output)
 
             # Unproject to camera frame
             depth = camera.data.output["distance_to_image_plane"]
             points_3d_cam = unproject_depth(depth, camera.data.intrinsic_matrices)  # (N, H, W, 3)
 
-            env_id = 0
-            points_cam = points_3d_cam[env_id].reshape(-1, 3)  # (H*W, 3)
+            # env_id = 0
+            # points_cam = points_3d_cam[env_id].reshape(-1, 3)  # (H*W, 3)
 
-            # Apply world transform
-            points_rotated = quat_apply(camera.data.quat_w_world[env_id].unsqueeze(0), points_cam)  # (H*W, 3)
-            points_world = points_rotated + camera.data.pos_w[env_id]  # (H*W, 3)
+            # # Apply world transform
+            # points_rotated = quat_apply(camera.data.quat_w_world[env_id].unsqueeze(0), points_cam)  # (H*W, 3)
+            # points_world = points_rotated + camera.data.pos_w[env_id]  # (H*W, 3)
 
-            # Filter valid depth
-            depth_valid = depth[env_id].squeeze(-1).reshape(-1) > 1e-4
-            points_world = points_world[depth_valid]
+            # # Filter valid depth
+            # depth_valid = depth[env_id].squeeze(-1).reshape(-1) > 1e-4
+            # points_world = points_world[depth_valid]
 
-            dists = torch.norm(points_world - needle_pos, dim=1)
+            # dists = torch.norm(points_world - needle_pos, dim=1)
 
-            mask = dists < 0.05  # distance threshold in meters
-            nearby_points = points_world[mask]
+            # mask = dists < 0.05  # distance threshold in meters
+            # nearby_points = points_world[mask]
 
-            if nearby_points.shape[0] > 100:
-                idx = torch.randperm(nearby_points.shape[0])[:100]
-                nearby_points = nearby_points[idx]
+            # if nearby_points.shape[0] > 100:
+            #     idx = torch.randperm(nearby_points.shape[0])[:100]
+            #     nearby_points = nearby_points[idx]
 
-            draw_points(nearby_points.tolist(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+            # draw_points(nearby_points.tolist(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
 
         # if INCLUDE_SHIFT and count % 200 == 0:
         #     print(f"[INFO] Count: {count}, Shift Step: {shift_step}")
@@ -893,72 +907,6 @@ def main():
         #     sim.step()
         #     scene.update(sim_dt)
 
-    if INCLUDE_SHIFT and count % 200 == 0:
-        print(f"[INFO] Count: {count}, Shift Step: {shift_step}")
-        if shift_step < 10:
-            print(f"[INFO] Applying shift step {shift_step}")
-            deformed_vertices = brain_shift_data[shift_step]
-            print(f"[INFO] Deformed vertices shape: {len(deformed_vertices)}")
-
-            if len(deformed_vertices) == 0:
-                print(f"[ERROR] No deformed vertices available for shift step {shift_step}")
-                shift_step += 1
-
-            for i in range(num_envs):
-                try:
-                    stage = stage_utils.get_current_stage()
-                    raw_prim = stage.GetPrimAtPath(f"/World/envs_{i}/Vessel")
-                    prim = UsdGeom.Mesh(raw_prim)
-                    print(f"[INFO] Found prim at /env_{i}/Vessel: {type(prim), type(raw_prim)}")
-
-                    if not prim or not prim.GetPrim().IsA(UsdGeom.Mesh):
-                        print(f"[ERROR] Prim at env_{i}/Vessel is not a valid UsdGeom.Mesh!")
-                        continue
-                    if not prim.GetPointsAttr().IsDefined():
-                        print(f"[ERROR] points attribute is not defined on /env_{i}/Vessel")
-                        continue
-
-                    # Fetch original points
-                    original_points = prim.GetPointsAttr().Get()
-                    original_np = np.array([[p[0], p[1], p[2]] for p in original_points], dtype=np.float32)
-
-                    # Prepare new deformed points
-                    usd_points = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in deformed_vertices]
-                    points_attr = prim.GetPointsAttr()
-                    points_attr.Set(usd_points)
-
-                    # Convert new to np
-                    new_np = np.array([[v[0], v[1], v[2]] for v in deformed_vertices], dtype=np.float32)
-
-                    # Compare: % change and displacement
-                    if original_np.shape == new_np.shape:
-                        displacement = np.linalg.norm(new_np - original_np, axis=1)
-                        changed_mask = displacement > 1e-5
-                        changed_percent = 100.0 * np.sum(changed_mask) / displacement.shape[0]
-                        print(f"[INFO] [env_{i}] Vertices changed: {changed_percent:.2f}%")
-                        print(f"[INFO] [env_{i}] Mean displacement: {np.mean(displacement):.6f}")
-                        print(f"[INFO] [env_{i}] Max displacement:  {np.max(displacement):.6f}")
-                    else:
-                        print(f"[ERROR] Mismatch in vertex count for env_{i}: {original_np.shape} vs {new_np.shape}")
-
-                    # Debug draw
-                    draw_points(new_np, color=(1.0, 1.0, 1.0, 1.0), size=26.0)
-
-                except Exception as e:
-                    print(f"[ERROR] Failed to apply deformation or draw for env {i}: {e}")
-                    continue
-
-            print(f"[INFO] Deformed vertices applied for shift step {shift_step} in all environments.")
-            shift_step += 1
-        else:
-            print("[INFO] No more shift steps available.")
-
-        # Update scene
-        scene.write_data_to_sim()
-        sim.step()
-        scene.update(sim_dt)
-
-
         if count % 150 == 0:
             # reset counter
             count = 0
@@ -997,9 +945,9 @@ def main():
             #print("[INFO]: Updated Root state: ", root_state)
             joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
             joint_pos += torch.rand_like(joint_pos) * -1
-            joint_vel += torch.rand_like(joint_vel) * -0.001
+            joint_vel += torch.rand_like(joint_vel) * -0.000001
             robot.write_joint_state_to_sim(joint_pos, joint_vel)
-            #robot.reset()
+            robot.reset()
             camera.update(sim_dt)   
             
         #print("[INFO]: Resetting robot state...")
