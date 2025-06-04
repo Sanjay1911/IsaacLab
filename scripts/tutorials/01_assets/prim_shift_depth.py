@@ -213,12 +213,6 @@ def design_scene():
     cfg = sim_utils.DistantLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     cfg.func("/World/Light", cfg)
 
-    # cfg_mesh = sim_utils.MeshFileCfg(
-    #     file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/vessels.obj"
-    #     #file_path="/home/sanjay/thesis_replications/forked/IsaacLab/deformed_step_0.obj",
-    # )
-    # cfg_mesh.func("/World/Vessel", cfg_mesh, translation=(0.0, 0.0, 0.20))
-
     cfg_mesh = sim_utils.UsdFileCfg(usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd")
     cfg_mesh.func("/World/Vessel", cfg_mesh, translation=(0.0, 0.0, 0.20))
 
@@ -244,8 +238,6 @@ def design_scene():
 
 def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
     """Main function."""
-    # Create the tool tip (small green sphere)
-    #prim_utils.create_sphere(prim_path=tool_prim_path, radius=0.002, color=(0.0, 1.0, 0.0))
     camera: RayCasterCamera = scene_entities["camera"]
     robot = scene_entities["robot"]
     caster = scene_entities["caster"]
@@ -255,8 +247,6 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
     print("[INFO]: Setup complete...")
 
     max_frames = 50
-    max_steps = 50
-
     stage = stage_utils.get_current_stage()
     for prim in stage.Traverse():
         if prim.IsA(UsdGeom.Mesh):
@@ -264,13 +254,6 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
     prim = UsdGeom.Mesh(stage.GetPrimAtPath("/World/Vessel/Vessels/Vessels"))
     points_attr = prim.GetPointsAttr()
     print(f"[INFO] Loaded mesh with {len(points_attr.Get())} vertices.")
-    cube_prim = stage.GetPrimAtPath("/World/Cube")
-    cube_matrix = np.array(omni.usd.get_world_transform_matrix(cube_prim)).T
-    cube_pos = cube_matrix[:3, 3]
-    tumor_prim = stage.GetPrimAtPath("/World/Tumor")
-    tumor_matrix = np.array(omni.usd.get_world_transform_matrix(tumor_prim)).T
-    tumor_position = tumor_matrix[:3, 3]
-    distance = np.linalg.norm(cube_pos - tumor_position)
     current_step = 0
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
     frame_marker_cfg.markers["frame"].scale = (0.015, 0.015, 0.015)
@@ -278,7 +261,6 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
     if INCLUDE_SHIFT:
         brain_shift_data = []
         shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/precomputed_brain_deformations_50_1env.pkl")
-        #print(shift_data)
         print("[INFO] Loaded brain shift data with length:", len(shift_data))
         for env_id in range(min(1, len(shift_data))):
             try:
@@ -312,14 +294,11 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
         distance = np.linalg.norm(cube_pos - tumor_position)
         print(f"[DEBUG] Cube position: {cube_pos}, Tumor position: {tumor_position}, Distance: {distance:.4f}")
         if last_distance is not None and np.isclose(distance, last_distance, rtol=1e-5):
-            # Skip updating mesh
             sim.step()
             continue
         last_distance = distance
 
-        # 4. Check distance bounds
         if distance > 0.10:
-            # Out of range → no deformation
             sim.step()
             continue
 
@@ -328,12 +307,6 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
         low = int(np.floor(step_f))
         high = min(int(np.ceil(step_f)), len(brain_shift_data) - 1)
         alpha = step_f - low
-        # if current_step <= max_frames:
-        #     depth_ratio = current_step / max_frames
-        #     step_f = depth_ratio * (len(brain_shift_data) - 1 if INCLUDE_SHIFT else max_steps)
-        #     low = int(np.floor(step_f))
-        #     high = min(int(np.ceil(step_f)), len(brain_shift_data) - 1 if INCLUDE_SHIFT else max_steps)
-        #     alpha = step_f - low
         if not DATA:
             if INCLUDE_SHIFT:
                 try:
@@ -384,13 +357,13 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
         distances = camera.data.output["distance_to_camera"]
         H, W = 48, 48
         center_distance = distances[0, H//2, W//2, 0]  # (N, H, W, C) shape
-        #print("Euclidean distances (sample):", center_distance)  # center pixel
+        print("Euclidean distances (sample):", center_distance)  # center pixel
         valid = ~torch.isinf(distances)
         num_valid = valid.sum().item()
         total_rays = distances.numel()
-        #print(f"[DEBUG] Valid rays: {num_valid}/{total_rays}")
+        print(f"[DEBUG] Valid rays: {num_valid}/{total_rays}")
         mean_distance = distances[valid].mean()
-        #print("Mean distance (valid hits):", mean_distance.item())
+        print("Mean distance (valid hits):", mean_distance.item())
         if current_step % 100 == 0:
             joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
             joint_pos += torch.rand_like(joint_pos) * -0.05
@@ -399,8 +372,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
         hits = caster.data.ray_hits_w  # (N, R, 3) shape
         valid_mask = torch.isfinite(hits).all(dim=-1)  # Shape: (N, R)
         valid_hits = hits[valid_mask]  # Shape: (V, 3), where V is number of valid rays
-        #print("Valid ray hit positions:\n", valid_hits)
-        #print(f"Number of valid hits: {valid_hits.shape[0]}")
+        print("Valid ray hit positions:\n", valid_hits)
+        print(f"Number of valid hits: {valid_hits.shape[0]}")
         valid_hits_np = valid_hits.cpu().numpy()
         draw_points(valid_hits_np, color=(1.0, 0.0, 0.0, 1.0), size=4.0)
         if args_cli.save:
@@ -439,11 +412,6 @@ def run_simulator(sim: sim_utils.SimulationContext, scene_entities: dict):
         print(f"[INFO] Current step: {current_step}/{max_frames}")
 
         sim.step()
-
-        #tip_pos = entry_point + depth_ratio * insertion_vector
-
-        # Optionally move the tool tip if you're rendering it:
-        # prim_utils.set_prim_world_pose(tool_prim_path, tip_pos)
         current_step += 1
 
 
