@@ -34,7 +34,10 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 import os, yaml
 import torch
+torch.set_printoptions(profile="full")
+import sys
 import numpy as np
+np.set_printoptions(threshold=sys.maxsize)
 from pxr import UsdGeom, UsdPhysics, Gf
 import omni.log
 import omni.physics.tensors.impl.api as physx
@@ -66,20 +69,20 @@ from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.warp import convert_to_warp_mesh, raycast_mesh
 from isaaclab.sensors.ray_caster import RayCasterCamera, RayCasterCameraCfg, patterns
+from isaaclab.sensors.ray_caster import RayCasterCfg, patterns
 from isaaclab.utils.math import project_points, unproject_depth
 from isaaclab.utils import convert_dict_to_backend
-from isaaclab.sensors import CameraCfg, ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.math import quat_mul
 draw = _debug_draw.acquire_debug_draw_interface()
 DIST_THRESHOLD = 0.005  
 SCORE_THRESHOLD = 300
-CAMERA_SAVE = False
+CAMERA_SAVE = True
 SIM = True
 MODE = "NONE"  # "RAYCAST" or None
 ENV_SPACING = 0.5
-INCLUDE_SHIFT = False  # Whether to include brain shift in the simulation
+INCLUDE_SHIFT = True  # Whether to include brain shift in the simulation
 all_lines = []
 all_collisions = []
 all_entry_points = []
@@ -114,6 +117,14 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
 
+    vessel = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Vessel",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    )
+
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
@@ -126,10 +137,11 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 
     raycast_camera = RayCasterCameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
-        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel","{ENV_REGEX_NS}/Tumor"],
+        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
         update_period=0.1,
-        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
-        data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
+        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0), convention="world"),
+        #data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
+        data_types=["distance_to_image_plane", "distance_to_camera"],
         debug_vis=False,
         max_distance=0.01,
         pattern_cfg=patterns.PinholeCameraPatternCfg(
@@ -139,6 +151,25 @@ class MinimalSceneCfg(InteractiveSceneCfg):
             width=640,
         ),
     )
+
+    raycast_sensor = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        update_period=1 / 60,
+        offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.0), rot=(0, 0.0, 0.0, 1.0)),
+        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
+        attach_yaw_only=True,
+        max_distance=0.1,
+        debug_vis=False,
+        pattern_cfg=patterns.LidarPatternCfg(
+            channels=50, vertical_fov_range=[-180, 180], horizontal_fov_range=[-180, 180], horizontal_res=1.0
+        )
+        # pattern_cfg=patterns.BpearlPatternCfg(
+        #     horizontal_fov=360.0,
+        #     horizontal_res=1.0,
+        #     vertical_ray_angles=[-45.0, -40.0, -35.0, -30.0, -25.0, -20.0, -15.0, 0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0],  # degrees
+        # )
+    )
+
 
 
 def batch_get_start_poses(entries: torch.Tensor, tumors: torch.Tensor):
@@ -525,6 +556,32 @@ def visualise_new_paths(vessel_points):
     o3d.visualization.draw_geometries(vis_geometries)
 
 
+def save_point_cloud_ply(filename, points: np.ndarray):
+    with open(filename, 'w') as f:
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"element vertex {len(points)}\n")
+        f.write("property float x\n")
+        f.write("property float y\n")
+        f.write("property float z\n")
+        f.write("end_header\n")
+        for point in points:
+            f.write(f"{point[0]} {point[1]} {point[2]}\n")
+
+
+def filter_hits_in_cylinder(hits_np, center, axis, radius=0.01, height=0.05):
+    """
+    Filters 3D points inside a cylinder centered at `center`, aligned along `axis`.
+    """
+    vecs = hits_np - center  # vectors from center to hit points
+    proj_lengths = np.dot(vecs, axis)  # projection on axis (height direction)
+    radial_vecs = vecs - np.outer(proj_lengths, axis)
+    radial_dists = np.linalg.norm(radial_vecs, axis=1)
+
+    # Condition: within radius and within height range
+    mask = (proj_lengths >= -height / 2) & (proj_lengths <= height / 2) & (radial_dists <= radius)
+    return hits_np[mask]
+
 
 def main():
     """
@@ -552,7 +609,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=8, env_spacing=ENV_SPACING)
+    scene_cfg = MinimalSceneCfg(num_envs=1, env_spacing=ENV_SPACING)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     mesh_prim = sim_utils.find_matching_prims(prim_path_regex="/World/envs/env_.*/Tumor")
@@ -696,8 +753,8 @@ def main():
                 # Apply offset to each point in current env
                 offset = offsets[env_id]  # shape (3,)
                 offset_points = points + offset  # (N, 3) + (3,) → (N, 3)
-                for point in offset_points:
-                    draw_points([point], color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+                #for point in offset_points:
+                    #draw_points([point], color=(1.0, 0.0, 0.0, 1.0), size=4.0)
                     #print(f"[INFO] Drawing offset entry point {point} for env {env_id}")
             except Exception as e:
                 print(f"[ERROR] Failed to draw entry points for env {env_id}: {e}")
@@ -762,18 +819,21 @@ def main():
     
     if INCLUDE_SHIFT:
         brain_shift_data = []
-        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/precomputed_brain_deformations_top10.pkl")
+        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/precomputed_brain_deformations_50_1env.pkl")
         print("[INFO] Loaded brain shift data with length:", len(shift_data))
-        for env_id in range(min(num_envs, len(shift_data))):
+        for env_id in range(min(1, len(shift_data))):
             try:
                 print(f"[INFO] Extracting top-1 shift steps for env {env_id}")
                 env = shift_data[env_id]
                 top_entry = env[0]  # top-ranked entry out of 10
-                for step_id in range(10):
-                    brain_shift_data.append(top_entry[step_id])
+                for step_id in range(50):
+                    step = top_entry[0][0][step_id]
+                    print(f"[DEBUG] Step {step_id} shape: {step.shape}")
+                    brain_shift_data.append(step)
             except Exception as e:
                 print(f"[ERROR] Failed to extract for env {env_id}: {e}")
-
+        if len(brain_shift_data) < 2:
+            raise ValueError("Not enough shift steps in brain_shift_data.")
 
     holder_pos_trch = torch.zeros((num_envs, 3), dtype=torch.float64, device=sim.device)
     holder_quat_trch = torch.zeros((num_envs, 4), dtype=torch.float64, device=sim.device)
@@ -794,13 +854,13 @@ def main():
         needle_pose_w = robot.data.body_state_w[:, needle_index, 0:7]
         needle_pos = needle_pose_w[:, :3]
         needle_quat = needle_pose_w[:, 3:7]
-        needle_marker.visualize(needle_pos, needle_quat)
+        #needle_marker.visualize(needle_pos, needle_quat)
         # print("Needle position:", needle_pos)
         # print("Needle orientation (quat):", needle_quat)
         # print("camera pose: ", camera.data.pos_w, camera.data.quat_w_world)
         transforms = camera._view.get_transforms()
         pos_w, quat_w = transforms[:, :3], transforms[:, 3:]
-        camera_marker.visualize(pos_w, quat_w)
+        #camera_marker.visualize(pos_w, quat_w)
         # print("Camera parent position:", pos_w)
         # print("Camera parent orientation (quat):", quat_w)
         # print("Received shape of depth image: ", camera.data.output["distance_to_image_plane"].shape)
@@ -815,6 +875,33 @@ def main():
         print(f"[DEBUG] Valid rays: {num_valid}/{total_rays}")
         mean_distance = distances[valid].mean()
         print("Mean distance (valid hits):", mean_distance.item())
+        #print(scene["raycast_sensor"])
+        hits = scene["raycast_sensor"].data.ray_hits_w  # (N, R, 3) shape
+        valid_mask = torch.isfinite(hits).all(dim=-1)  # Shape: (N, R)
+        valid_hits = hits[valid_mask]  # Shape: (V, 3), where V is number of valid rays
+        #print("Valid ray hit positions:\n", valid_hits)
+        print(f"Number of valid hits: {valid_hits.shape[0]}")
+        valid_hits_np = valid_hits.cpu().numpy()
+        #draw_points(valid_hits_np, color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+        # Tooltip position and insertion direction
+        needle_center = needle_pos[0].cpu().numpy()  # (3,) position of tooltip
+        insertion_axis = np.array([0.0, 0.0, 1.0])  # Replace with true orientation if neededd
+
+        # Filter hits within a cylinder around the needle
+        filtered_hits = filter_hits_in_cylinder(
+            hits_np=valid_hits_np,
+            center=needle_center,
+            axis=insertion_axis,
+            radius=0.01,
+            height=0.05
+        )
+        # Visualize filtered hits
+        draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0)
+        print(f"[INFO] Hits inside cylinder: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
+
+        if valid_hits_np.shape[0] != 0:
+            print("Valid hits shape:", valid_hits_np.shape)
+            save_point_cloud_ply("/home/sanjay/thesis_replications/forked/IsaacLab/custom/raycast_hits_maxdist.ply", valid_hits_np)
         with open(os.path.join(output_dir, "depth_info.csv"), "a") as f:
             f.write(f"{count},{mean_distance.item()},{center_distance.item()},{num_valid/total_rays},{100.0 * num_valid / total_rays:.2f}%\n")
         #print("-------------------------------")
@@ -862,50 +949,50 @@ def main():
 
             # draw_points(nearby_points.tolist(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
 
-        # if INCLUDE_SHIFT and count % 200 == 0:
-        #     print(f"[INFO] Count: {count}, Shift Step: {shift_step}")
-        #     if shift_step < 10:
-        #         print(f"[INFO] Applying shift step {shift_step}")
-        #         deformed_vertices = brain_shift_data[shift_step]
-        #         print(f"[INFO] Deformed vertices shape: {len(deformed_vertices)}")
-        #         if len(deformed_vertices) == 0:
-        #             print(f"[ERROR] No deformed vertices available for shift step {shift_step}")
-        #             shift_step += 1
-        #             continue
-        #         for i in range(num_envs):
-        #             try:
-        #                 stage = stage_utils.get_current_stage()
-        #                 raw_prim = stage.GetPrimAtPath(f"/World/envs_{i}/Vessel")
-        #                 prim = UsdGeom.Mesh(stage.GetPrimAtPath(f"/World/envs_{i}/Vessel"))
-        #                 print(f"[INFO] Found prim at /env_{i}/Vessel: {type(prim),type(raw_prim)}")
-        #                 if not prim or not prim.GetPrim().IsA(UsdGeom.Mesh):
-        #                     print(f"[ERROR] Prim at env_{i}/Vessel is not a valid UsdGeom.Mesh!")
-        #                     continue
-        #                 print(f"[INFO] Found prim: {prim}")
-        #             except Exception as e:
-        #                 print(f"[ERROR] Failed to get stage or prim: {e}")
-        #                 continue
+        if INCLUDE_SHIFT and count % 20 == 0:
+            print(f"[INFO] Count: {count}, Shift Step: {shift_step}")
+            if shift_step < 10:
+                print(f"[INFO] Applying shift step {shift_step}")
+                deformed_vertices = brain_shift_data[shift_step]
+                print(f"[INFO] Deformed vertices shape: {len(deformed_vertices)}")
+                if len(deformed_vertices) == 0:
+                    print(f"[ERROR] No deformed vertices available for shift step {shift_step}")
+                    shift_step += 1
+                    continue
+                for i in range(num_envs):
+                    try:
+                        stage = stage_utils.get_current_stage()
+                        raw_prim = stage.GetPrimAtPath(f"/World/envs_{i}/Vessel")
+                        prim = UsdGeom.Mesh(stage.GetPrimAtPath(f"/World/envs_{i}/Vessel"))
+                        print(f"[INFO] Found prim at /env_{i}/Vessel: {type(prim),type(raw_prim)}")
+                        if not prim or not prim.GetPrim().IsA(UsdGeom.Mesh):
+                            print(f"[ERROR] Prim at env_{i}/Vessel is not a valid UsdGeom.Mesh!")
+                            continue
+                        print(f"[INFO] Found prim: {prim}")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to get stage or prim: {e}")
+                        continue
                     
-        #             # Get reference to the points attribute of your mesh
-        #             # Example: points_attr = UsdGeom.Mesh(mesh_paths[i]).GetPointsAttr()
-        #             points_attr = prim.GetPointsAttr()
-        #             if not points_attr.IsDefined():
-        #                 print(f"[ERROR] points attribute is not defined on /env_{i}/Vessel")
-        #                 continue
+                    # Get reference to the points attribute of your mesh
+                    # Example: points_attr = UsdGeom.Mesh(mesh_paths[i]).GetPointsAttr()
+                    points_attr = prim.GetPointsAttr()
+                    if not points_attr.IsDefined():
+                        print(f"[ERROR] points attribute is not defined on /env_{i}/Vessel")
+                        continue
 
-        #             # Convert to Gf.Vec3f and assign
-        #             usd_points = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in deformed_vertices]
-        #             points_attr.Set(usd_points)
-        #             points_np = np.array([[v[0], v[1], v[2]] for v in deformed_vertices], dtype=np.float32)
-        #             #draw.clear_points()
-        #             draw_points(points_np, color=(1.0, 1.0, 1.0, 1.0), size=26.0)
-        #         print(f"[INFO] Deformed vertices applied for shift step {shift_step} in all environments.")
-        #         shift_step += 1
-        #     else:
-        #         print("[INFO] No more shift steps available.")
-        #     scene.write_data_to_sim()
-        #     sim.step()
-        #     scene.update(sim_dt)
+                    # Convert to Gf.Vec3f and assign
+                    usd_points = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in deformed_vertices]
+                    points_attr.Set(usd_points)
+                    points_np = np.array([[v[0], v[1], v[2]] for v in deformed_vertices], dtype=np.float32)
+                    #draw.clear_points()
+                    draw_points(points_np, color=(1.0, 1.0, 1.0, 1.0), size=26.0)
+                print(f"[INFO] Deformed vertices applied for shift step {shift_step} in all environments.")
+                shift_step += 1
+            else:
+                print("[INFO] No more shift steps available.")
+            scene.write_data_to_sim()
+            sim.step()
+            scene.update(sim_dt)
 
         if count % 150 == 0:
             # reset counter
@@ -944,14 +1031,12 @@ def main():
             robot.write_root_velocity_to_sim(root_state[:, 7:])
             #print("[INFO]: Updated Root state: ", root_state)
             joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
-            joint_pos += torch.rand_like(joint_pos) * -1
-            joint_vel += torch.rand_like(joint_vel) * -0.000001
+            joint_pos += torch.rand_like(joint_pos) * -1.0
+            joint_vel = 0.00000
             robot.write_joint_state_to_sim(joint_pos, joint_vel)
             robot.reset()
             camera.update(sim_dt)   
             
-        #print("[INFO]: Resetting robot state...")
-        #print(scene["raycast_camera"])
         scene.write_data_to_sim()
         sim.step()
         count += 1
