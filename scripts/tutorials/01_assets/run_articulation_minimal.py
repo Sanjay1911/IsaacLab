@@ -997,13 +997,15 @@ def main():
                     continue
 
                 original_np = np.asarray(points_attr.Get())
-                #test_cube_pos, _ = test_cube.get_local_poses()
-                #test_cube_pos_np = test_cube_pos.cpu().numpy()
+                needle_index = robot.data.body_names.index("tooltip")
+                needle_pose_w = robot.data.body_state_w[:, needle_index, 0:7]
+                needle_pos = needle_pose_w[:, :3]
+                needle_pos_np = needle_pos.cpu().numpy()
                 tumor_pos, _ = tumor.get_local_poses() 
                 tumor_pos_np = tumor_pos.cpu().numpy()
 
-                #distance = np.linalg.norm(test_cube_pos_np - tumor_pos_np)
-                #print(f"[DEBUG] Cube: {test_cube_pos_np}, Tumor: {tumor_pos_np}, Distance: {distance:.4f}")
+                distance = np.linalg.norm(needle_pos_np - tumor_pos_np)
+                print(f"[DEBUG] Needle TT: {needle_pos_np}, Tumor: {tumor_pos_np}, Distance: {distance:.4f}")
 
                 if last_distance is not None and np.isclose(distance, last_distance, rtol=1e-5):
                     sim.step()
