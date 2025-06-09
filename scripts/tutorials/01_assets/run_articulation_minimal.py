@@ -719,25 +719,34 @@ def main():
         tumor_positions = []
         tumor_quaternions = []
         tumor_centroids = []
-        entry_points = []
+        scored_paths = []
         top_entry_points = []    
         start_positions = []
         start_quaternions = []
         # Read Tumor Dataset Pickle and get entry points and start poses
-        data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_cleaned.pkl")    
+        data = load_pickle("custom/path_comparison/pickle_finale/rl_dataset_4envs.pkl")    
         for i in range(min(num_envs, len(data))):
             print(f"[INFO] Loading data for env {i}")
             try:
                 env_data = data[i]
-                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
+                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "scored_paths", "top_entry_points", "start_pose"]:
                     assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
                 tumor_positions.append(env_data["tumor_position"])
                 tumor_quaternions.append(env_data["tumor_quat"])
                 tumor_centroids.append(env_data["tumor_centroid"])
-                entry_points.append(env_data["entry_points"])
+                scored_paths.append(env_data["scored_paths"])
                 top_entry_points.append(env_data["top_entry_points"])
-                start_positions.append(env_data["start_pose"]["position"])
-                start_quaternions.append(env_data["start_pose"]["quaternion"])
+                # start_positions.append(env_data["start_pose"]["position"])
+                # start_quaternions.append(env_data["start_pose"]["quaternion"])
+                # Handle start_pose (which is a list of dicts)
+                poses = env_data["start_pose"]
+                if isinstance(poses, list) and len(poses) > 0:
+                    # Just pick the first pose for now
+                    start_positions.append(poses[0]["position"])
+                    start_quaternions.append(poses[0]["quaternion"])
+                else:
+                    raise ValueError(f"[ERROR] ENV {i}: Invalid 'start_pose' format or empty list")
+                
             except KeyError as e:
                 print(f"[ERROR] ENV {i}: Missing key {e}")
                 continue
@@ -747,25 +756,11 @@ def main():
             except Exception as e:
                 print(f"[ERROR] ENV {i}: Failed to load data: {e}")
                 continue
-        
-        print("Entry points at env 0:", entry_points[0])
+
         print("Length of start positions:", len(start_positions), num_envs)
         cloner = GridCloner(spacing=ENV_SPACING)
         offsets, _ = cloner.get_clone_transforms(num_envs)
         
-        for env_id, points in enumerate(entry_points):
-            #print(f"[INFO] Entry points for env {env_id}: {points}")
-            try:
-                # Apply offset to each point in current env
-                offset = offsets[env_id]  # shape (3,)
-                offset_points = points + offset  # (N, 3) + (3,) → (N, 3)
-                #for point in offset_points:
-                    #draw_points([point], color=(1.0, 0.0, 0.0, 1.0), size=4.0)
-                    #print(f"[INFO] Drawing offset entry point {point} for env {env_id}")
-            except Exception as e:
-                print(f"[ERROR] Failed to draw entry points for env {env_id}: {e}")
-                continue
-
         try:
             for env_id, points in enumerate(tumor_centroids):
                 offset = offsets[env_id]  # shape (3,)
