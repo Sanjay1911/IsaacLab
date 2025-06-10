@@ -616,7 +616,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=2, env_spacing=ENV_SPACING, replicate_physics=False)
+    scene_cfg = MinimalSceneCfg(num_envs=10, env_spacing=ENV_SPACING, replicate_physics=False)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     mesh_prim = sim_utils.find_matching_prims(prim_path_regex="/World/envs/env_.*/Tumor")
@@ -724,7 +724,7 @@ def main():
         start_positions = []
         start_quaternions = []
         # Read Tumor Dataset Pickle and get entry points and start poses
-        data = load_pickle("custom/path_comparison/pickle_finale/rl_dataset_4envs.pkl")    
+        data = load_pickle("custom/path_comparison/pickle_finale/rl_dataset_10envs.pkl")    
         for i in range(min(num_envs, len(data))):
             print(f"[INFO] Loading data for env {i}")
             try:
