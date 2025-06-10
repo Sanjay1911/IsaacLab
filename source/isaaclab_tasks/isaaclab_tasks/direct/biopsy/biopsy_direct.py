@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import torch
 import numpy as np
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
 import math
 import random
@@ -16,6 +17,7 @@ from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf
 from pxr import UsdGeom
 import isaacsim.core.utils.prims as prim_utils
 from isaacsim.core.cloner import GridCloner
+import isaacsim.core.utils.stage as stage_utils
 # try:
 #     from isaacsim.util.debug_draw import _debug_draw
 # except ImportError:
@@ -32,6 +34,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import sample_uniform
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sensors.ray_caster import RayCasterCamera, RayCasterCameraCfg, patterns
+from isaaclab.sensors.ray_caster import RayCasterCfg, patterns
 from isaaclab_assets import UR5_CFG
 from isaaclab.utils.io import dump_pickle, load_pickle
 from . import biopsy_preop
@@ -57,8 +60,8 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
-        spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/vessels.obj"
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -73,19 +76,62 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 
     robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-    raycast_camera = RayCasterCameraCfg(
+    raycast_camera_vessel = RayCasterCameraCfg(
         prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
-        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor", "{ENV_REGEX_NS}/Vessel"],
+        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
         update_period=0.1,
         offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
         data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
-        debug_vis=False,
+        debug_vis=True,
+        max_distance=0.001,
         pattern_cfg=patterns.PinholeCameraPatternCfg(
             focal_length=24.0,
             horizontal_aperture=20.955,
             height=420,
             width=640,
         ),
+    )
+
+    raycast_camera_tumor = RayCasterCameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
+        update_period=0.1,
+        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0), convention="world"),
+        data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
+        debug_vis=False,
+        max_distance=0.001,
+        pattern_cfg=patterns.PinholeCameraPatternCfg(
+            focal_length=24.0,
+            horizontal_aperture=20.955,
+            height=420,
+            width=640,
+        ),
+    )
+
+    raycast_vessel = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        update_period=1 / 60,
+        offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.0), rot=(0, 0.0, 0.0, 1.0)),
+        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
+        attach_yaw_only=True,
+        max_distance=0.01,
+        debug_vis=False,
+        pattern_cfg=patterns.LidarPatternCfg(
+            channels=50, vertical_fov_range=[-180, 180], horizontal_fov_range=[-180, 180], horizontal_res=1.0
+        )
+    )
+
+    raycast_tumor = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        update_period=1 / 60,
+        offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.0), rot=(0, 0.0, 0.0, 1.0)),
+        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
+        attach_yaw_only=True,
+        max_distance=0.01,
+        debug_vis=False,
+        pattern_cfg=patterns.LidarPatternCfg(
+            channels=50, vertical_fov_range=[-60, 60], horizontal_fov_range=[-20, 20], horizontal_res=1.0
+        )
     )
 
 
@@ -112,17 +158,16 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     )
 
     #scene
-    scene: MinimalSceneCfg = MinimalSceneCfg(num_envs=48, env_spacing=0.5, replicate_physics=False)
+    scene: MinimalSceneCfg = MinimalSceneCfg(num_envs=1, env_spacing=0.5, replicate_physics=False)
 
     action_scale = 0.5
     dof_velocity_scale = 0.1
 
     # reward scales
-    dist_reward_scale = 1.5
-    rot_reward_scale = 1.5
-    open_reward_scale = 10.0
-    action_penalty_scale = 0.05
-    finger_reward_scale = 2.0
+    w_tumor_dist = 5.0
+    w_vessel_penalty = 3.0
+    w_collision_score = 1.5
+    bonus_inside_tumor = 10.0
     pass
 
 
@@ -168,7 +213,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         print(f"Robot DOF limits: {self.robot_dof_lower_limits}, {self.robot_dof_upper_limits}")
         self.robot_dof_speed_scales = torch.ones_like(self.robot_dof_lower_limits)
         self.robot_dof_speed_scales[self._robot.find_joints("holder_needle_slider")[0]] = 0.1
-        
         self.preop = biopsy_preop.BiopsyPreop()
         self.preop.print_test()
         self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
@@ -199,29 +243,38 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.needle_index = self._robot.find_bodies("needle_link")[0][0]
         omni.log.info(f"Link Indices: {self.tooltip_index, self.holder_index, self.needle_index}")
         self.active_path_idx = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)
-        
+        print(f"Robot Tool Tip Position before extension: {self._robot.data.body_pos_w[:, self.tooltip_index]}")
+        # Extend the needle for checking if raycast camera hits the tumor
+        joint_pos, joint_vel = self._robot.data.default_joint_pos.clone(), self._robot.data.default_joint_vel.clone()
+        joint_pos[:, 0] = -0.17
+        joint_vel[:] = 0.0
+        self._robot.write_joint_state_to_sim(joint_pos, joint_vel)
+        self._robot.set_joint_position_target(joint_pos)
+        self._robot.write_data_to_sim()
+        print(f"Robot Tool Tip Position: {self._robot.data.body_pos_w[:, self.tooltip_index]}")
         #self.draw = _debug_draw.acquire_debug_draw_interface()
-        self.camera = self.scene["raycast_camera"]
+
+        self.DIST_THRESHOLD = 0.005
         # read pickled data
         print("Loading tumor data...")
         self.tumor_positions = []
         self.tumor_quaternions = []
         self.tumor_centroids = []
-        self.tumor_entry_points = []
+        self.scored_paths = []
         self.tumor_top_entry_points = []
         self.start_positions = []
         self.start_quaternions = []
-        self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl")
+        self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/pickle_finale/rl_dataset_10envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
         for i in range(min(self.num_envs, len(self.tumor_pickle))):
             omni.log.info(f"Loading tumor data for env: {i}")
             try:
                 env_data = self.tumor_pickle[i]
-                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
+                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "scored_paths", "top_entry_points", "start_pose"]:
                     assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
                 self.tumor_positions.append(env_data["tumor_position"])
                 self.tumor_quaternions.append(env_data["tumor_quat"])
                 self.tumor_centroids.append(env_data["tumor_centroid"])
-                self.tumor_entry_points.append(env_data["entry_points"])
+                self.scored_paths.append(env_data["scored_paths"])
                 self.tumor_top_entry_points.append(env_data["top_entry_points"])
                 self.start_positions.append([pose["position"] for pose in env_data["start_pose"]])
                 self.start_quaternions.append([pose["quaternion"] for pose in env_data["start_pose"]])
@@ -241,6 +294,30 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.tooltip_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.tooltip_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.tumor = self.scene["tumor"]
+
+        # Sensors
+        self.raycast_cam_tumor = self.scene["raycast_camera_tumor"]
+        self.raycast_cam_vessel = self.scene["raycast_camera_vessel"]
+        self.raycast_vessel = self.scene["raycast_vessel"]
+        self.raycast_tumor = self.scene["raycast_tumor"]
+
+        # Brain Shift 
+        self.brain_shift_data = []
+        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations_10envs.pkl")
+        print("[INFO] Loaded brain shift data with length:", len(shift_data))
+        for env_id in range(min(1, len(shift_data))):
+            try:
+                print(f"[INFO] Extracting top-1 shift steps for env {env_id}")
+                env = shift_data[env_id]
+                top_entry = env[0]  # top-ranked entry out of 10
+                for step_id in range(50):
+                    step = top_entry[0][0][step_id]
+                    print(f"[DEBUG] Step {step_id} shape: {step.shape}")
+                    self.brain_shift_data.append(step)
+            except Exception as e:
+                print(f"[ERROR] Failed to extract for env {env_id}: {e}")
+        if len(self.brain_shift_data) < 2:
+            raise ValueError("Not enough shift steps in brain_shift_data.")
 
     def _setup_scene(self):
         """
@@ -286,17 +363,20 @@ class BiopsyDirectEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
 
         root_state = self._robot.data.default_root_state.clone()
-
         for env_id in env_ids:
+            print("Resetting environments with IDs:", env_id)
             offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
             tumor_idx = random.randint(0, len(self.tumor_pickle) - 1)
             tumor_data = self.tumor_pickle[tumor_idx]
             tumor_centroid = torch.tensor(tumor_data["tumor_centroid"], dtype=torch.float32, device=self.device)
             # Set tumor pose + offset
-            tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device) + offset
+            tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device) #+ offset
             tumor_quat = torch.tensor(tumor_data["tumor_quat"], dtype=torch.float32, device=self.device)
+            print(f"Setting tumor position: {tumor_pos}, quaternion: {tumor_quat} for env {env_id}")
             self.tumor.set_local_poses(tumor_pos.unsqueeze(0), tumor_quat.unsqueeze(0), [env_id])
-            self.shuffled_tumor_centroids[env_id] = tumor_centroid + offset
+            tumpos, tumqut = self.tumor.get_local_poses()
+            print(f"Set tumor position: {tumpos}, quaternion: {tumqut} for env {env_id}")
+            self.shuffled_tumor_centroids[env_id] = tumor_centroid  #+ offset
             path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
             start_pose = tumor_data["start_pose"][path_idx]
             start_pos = start_pose["position"].to(self.device) + offset
@@ -331,7 +411,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._compute_intermediate_values(env_ids)
 
     def _get_dones(self):
-        pass
+        dummy_dones = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        time_out = self.episode_length_buf >= self.max_episode_length - 1
+        return dummy_dones, time_out
 
     def _get_observations(self):  # TODO: Observations
         """
@@ -344,16 +426,45 @@ class BiopsyDirectEnv(DirectRLEnv):
         f) visual observations from the raycaster camera
         g) collision scores
         """
+        self.tool_tip_pos = self._robot.data.body_pos_w[:, self.tooltip_index]
+        omni.log.info(f"Tool Tip Position: {self.tool_tip_pos}")
         to_tumor = self.shuffled_tumor_centroids - self.tooltip_pos  # TODO: tumor centroid - tooltip
+        tip_to_tumor = self.distance_to_tumor(env_ids=self.scene.num_envs)
+        tip_to_vessel = self.distance_to_vessel()
+        tumor_position, tumor_quaternion = self.tumor.get_local_poses()
+        omni.log.info(f"Tumor Position: {tumor_position}, Tumor Quaternion: {tumor_quaternion}")
+        to_tumor_actual = torch.linalg.norm(tumor_position - self.tool_tip_pos, dim=-1)
+        print(f"Distance from tooltip to tumor centroid: {to_tumor_actual}")
+        self.boundary_check_vessel()
+        self.boundary_check_tumor()  # Check if the raycast hits the vessel or tumor
+        self.brain_shift()
+        #collision_scores = self.get_real_time_collision_scores()  # shape: (N,)
+        #print(f"Distance to tumor: {tip_to_tumor}")
         obs = torch.cat(
             (
+                # torch.tensor([tip_to_tumor], device=self.device),
                 self.tooltip_pos,  # tooltip position
                 self.tooltip_rot,  # tooltip rotation
                 self._robot.data.joint_vel * self.cfg.dof_velocity_scale, # joint velocities
                 to_tumor,  # distance from tool tip to tumor centroid1
+                
             ),
             dim=-1,
         )
+
+        obs_placeholder = torch.cat(
+            (
+                self.tooltip_pos,                      # (3,)
+                self.tooltip_rot,                      # (4,)
+                self._robot.data.joint_vel * self.cfg.dof_velocity_scale,    # (n_dof,)
+                to_tumor,                              # (3,)
+                tip_to_tumor.unsqueeze(-1),            # (1,)  ← mean from raycast_cam_tumor
+                tip_to_vessel.unsqueeze(-1),           # (1,)  ← mean from raycast_cam_vessel
+                #current_collision_score.unsqueeze(-1)  # (1,)  ← real-time score (if available)
+            ),
+            dim=-1,
+        )
+
         return {"policy": obs}
 
     def _get_rewards(self):  # TODO: to get calculated Rewards
@@ -362,8 +473,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         a) RayCaster Camera reward based on distance to image plane and distance to camera
 
         """
-        self.__compute_reward()
-        pass
+        total_reward = self.__compute_reward()
+        return total_reward
 
     def _get_states(self):  # TODO: States
         pass
@@ -372,7 +483,210 @@ class BiopsyDirectEnv(DirectRLEnv):
         pass
 
     def __compute_reward(self):  # TODO: actual Rewards
-        pass
+        """
+        Reward structure:
+        + reward for being closer to tumor
+        - penalty for being close to vessels
+        - penalty for high real-time collision score
+        + bonus for being inside tumor
+        """
+
+        # === 1. Compute raycast-based distances ===
+        tip_to_tumor = self.distance_to_tumor()      # shape: (N,)
+        tip_to_vessel = self.distance_to_vessel()    # shape: (N,)
+
+        # === 2. Real-time collision score (e.g. from your scoring function or heuristics) ===
+        # Dummy example: replace with your actual score function call
+        #current_collision_score = self.get_real_time_collision_scores()  # shape: (N,)
+
+        # === 3. Check if tip is inside tumor (binary mask for bonus) ===
+        #inside_tumor = self.check_tip_inside_tumor()  # shape: (N,), bool tensor
+
+        # === 4. Reward weights ===
+        w_tumor_dist = 5.0
+        w_vessel_penalty = 3.0
+        w_collision_score = 1.5
+        bonus_inside_tumor = 10.0
+
+        # === 5. Compute total reward ===
+        reward = (
+            -w_tumor_dist * tip_to_tumor
+            -w_vessel_penalty * tip_to_vessel
+            #-w_collision_score * current_collision_score
+            #+ bonus_inside_tumor * inside_tumor.float()
+        )
+
+        # === 6. Optional: clip or normalize if needed ===
+        reward = torch.clip(reward, min=-100.0, max=100.0)
+
+        return reward
+
+    def save_point_cloud_ply(self, filename, points: np.ndarray):
+        with open(filename, 'w') as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {len(points)}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write("end_header\n")
+            for point in points:
+                f.write(f"{point[0]} {point[1]} {point[2]}\n")
+
+    def filter_hits_in_cylinder(self, hits_np, center, axis, radius=0.01, height=0.05):
+        """
+        Filters 3D points inside a cylinder centered at `center`, aligned along `axis`.
+        """
+        vecs = hits_np - center  # vectors from center to hit points
+        proj_lengths = np.dot(vecs, axis)  # projection on axis (height direction)
+        radial_vecs = vecs - np.outer(proj_lengths, axis)
+        radial_dists = np.linalg.norm(radial_vecs, axis=1)
+
+        # Condition: within radius and within height range
+        mask = (proj_lengths >= -height / 2) & (proj_lengths <= height / 2) & (radial_dists <= radius)
+        return hits_np[mask]
+
+    def boundary_check_tumor(self):
+        hits = self.raycast_tumor.data.ray_hits_w
+        for env_id in range(self.num_envs):
+            hits_env = hits[env_id]  # shape (R, 3)
+            valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
+            valid_hits = hits_env[valid_mask]  # shape (V, 3)
+            tool_tip = self._robot.data.body_pos_w[:, self.tooltip_index]
+            needle_center = tool_tip[env_id].cpu().numpy()
+            insertion_axis = np.array([0.0, 0.0, 1.0])  # or compute from needle orientation
+
+            valid_hits_np = valid_hits.cpu().numpy()
+            filtered_hits = self.filter_hits_in_cylinder(
+                hits_np=valid_hits_np,
+                center=needle_center,
+                axis=insertion_axis,
+                radius=0.05,
+                height=0.25
+            )
+
+            print(f"[env {env_id}] Hits inside cylinder Tumor: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
+            if valid_hits_np.shape[0] != 0:
+                print("Valid hits shape:", valid_hits_np.shape)
+                #self.save_point_cloud_ply("/home/sanjay/thesis_replications/forked/IsaacLab/custom/biopsy_direct.ply", valid_hits_np)
+
+    def boundary_check_vessel(self):
+        hits = self.raycast_vessel.data.ray_hits_w
+        for env_id in range(self.num_envs):
+            hits_env = hits[env_id]  # shape (R, 3)
+            valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
+            valid_hits = hits_env[valid_mask]  # shape (V, 3)
+            tool_tip = self._robot.data.body_pos_w[:, self.tooltip_index]
+            needle_center = tool_tip[env_id].cpu().numpy()
+            insertion_axis = np.array([0.0, 0.0, 1.0])  # or compute from needle orientation
+
+            valid_hits_np = valid_hits.cpu().numpy()
+            filtered_hits = self.filter_hits_in_cylinder(
+                hits_np=valid_hits_np,
+                center=needle_center,
+                axis=insertion_axis,
+                radius=0.05,
+                height=0.25
+            )
+
+            print(f"[env {env_id}] Hits inside cylinder Vessel: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
+            if valid_hits_np.shape[0] != 0:
+                print("Valid hits shape:", valid_hits_np.shape)
+                #self.save_point_cloud_ply("/home/sanjay/thesis_replications/forked/IsaacLab/custom/biopsy_direct.ply", valid_hits_np)
+            #self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0)  # Optional: if you want to visualize
+
+    def distance_to_vessel(self):
+        distances = self.raycast_cam_vessel.data.output["distance_to_camera"]
+        if distances is None or distances.shape[0] == 0:
+            print("[WARN] Raycast distances not yet populated.")
+            return torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+
+        num_envs = distances.shape[0]
+        H, W = distances.shape[1:3]
+        total_rays = H * W
+
+        max_dist = 0.01
+        mean_dists = torch.zeros((num_envs,), dtype=torch.float32, device=self.device)
+        for env_id in range(num_envs):
+            dists = distances[env_id, :, :, 0]
+            valid = (~torch.isinf(dists)) & (dists <= max_dist)
+            num_valid = valid.sum().item()
+            if num_valid > 0:
+                mean = dists[valid].mean()
+                mean_dists[env_id] = mean
+                print(f"[env {env_id}] Mean distance from tip to vessels (valid hits): {mean.item():.6f}")
+            else:
+                mean_dists[env_id] = 0.0
+                print(f"[env {env_id}] No valid hits within {max_dist*1000:.1f} mm")
+            print(f"[env {env_id}] Valid rays hitting the Vessels: {num_valid}/{total_rays}")
+        return mean_dists
+
+    def distance_to_tumor(self, env_ids=None):
+        distances = self.raycast_cam_tumor.data.output["distance_to_camera"]
+        if distances is None or distances.shape[0] == 0:
+            print("[WARN] Raycast distances not yet populated.")
+            return torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+
+        num_envs = distances.shape[0]
+        H, W = distances.shape[1:3]
+        total_rays = H * W
+
+        max_dist = 0.01  # 10 mm
+        mean_dists = torch.zeros((num_envs,), dtype=torch.float32, device=self.device)
+
+        for env_id in range(num_envs):
+            dists = distances[env_id, :, :, 0]  # shape (H, W)
+            valid = (~torch.isinf(dists)) & (dists <= max_dist)
+            num_valid = valid.sum().item()
+            if num_valid > 0:
+                mean = dists[valid].mean()
+                mean_dists[env_id] = mean
+                print(f"[env {env_id}] Mean distance from tip to Tumor(valid hits): {mean.item():.6f}")
+            else:
+                mean_dists[env_id] = 0.0  # or float("inf") if you want to mark as invalid
+                print(f"[env {env_id}] No valid hits within {max_dist*1000:.1f} mm")
+            print(f"[env {env_id}] Valid rays hitting the Tumor: {num_valid}/{total_rays}")
+
+        return mean_dists
+
+    def brain_shift(self):
+        try:
+            stage = stage_utils.get_current_stage()
+            # for prim in stage.Traverse():
+            #     if prim.IsA(UsdGeom.Mesh):
+            #         print(f"[DEBUG] Found UsdGeom.Mesh at {prim.GetPath()}")
+            #         print(f"[DEBUG] Found prim: {prim.GetPath()} of type {prim.GetTypeName()}")
+            for i in range(self.num_envs):
+                prim_path = f"/World/envs/env_{i}/Vessel/Vessels/Vessels"
+                raw_prim = stage.GetPrimAtPath(prim_path)
+                prim = UsdGeom.Mesh(raw_prim)
+                points_attr = prim.GetPointsAttr()
+                if not points_attr.IsDefined():
+                    print(f"[ERROR] points attribute not defined at {prim_path}")
+                    continue
+
+                original_np = np.asarray(points_attr.Get())
+                if original_np.size == 0:
+                    print(f"[ERROR] No points found in mesh at {prim_path}")
+                    continue
+                print(f"[DEBUG] Original points shape: {original_np.shape} at {prim_path}")
+        except Exception as e:
+            print(f"[ERROR] Failed to access mesh points: {e}")
+        
+    def get_real_time_collision_scores(self, entry_point, tumor_center, vessel_points, num_samples=1000):
+        vessels_kd = cKDTree(vessel_points)
+
+        # Sample points along straight line path
+        line = np.linspace(0, 1, num_samples).reshape(-1, 1) * (tumor_center - entry_point) + entry_point
+
+        # Compute distances to nearest vessel point
+        dists, _ = vessels_kd.query(line)
+        collisions = dists < self.DIST_THRESHOLD
+
+        collision_score = np.sum(collisions)
+        collision_ratio = collision_score / num_samples
+
+        return collision_score, collision_ratio
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
         point_list = [tuple(p) for p in points_np]
