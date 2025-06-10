@@ -6,7 +6,11 @@
 from __future__ import annotations
 
 import torch
+torch.set_printoptions(profile="full")
+import sys
 import numpy as np
+np.set_printoptions(threshold=sys.maxsize)
+from pxr import UsdGeom, UsdPhysics, Gf
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
 import math
@@ -304,20 +308,22 @@ class BiopsyDirectEnv(DirectRLEnv):
         # Brain Shift 
         self.brain_shift_data = []
         shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations_10envs.pkl")
-        print("[INFO] Loaded brain shift data with length:", len(shift_data))
-        for env_id in range(min(1, len(shift_data))):
+        print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
+        for env_id in range(len(shift_data)):
             try:
                 print(f"[INFO] Extracting top-1 shift steps for env {env_id}")
                 env = shift_data[env_id]
+                print("Shape of env:", len(env), "Number of entries:", len(env[0]))
                 top_entry = env[0]  # top-ranked entry out of 10
-                for step_id in range(50):
-                    step = top_entry[0][0][step_id]
-                    print(f"[DEBUG] Step {step_id} shape: {step.shape}")
-                    self.brain_shift_data.append(step)
+                print("Shape of top entry:", len(top_entry))
+                print("Top entry:", len(top_entry[0]))  # deformation steps
+                self.brain_shift_data.append(top_entry[0])  # append the top entry's deformation steps
             except Exception as e:
                 print(f"[ERROR] Failed to extract for env {env_id}: {e}")
-        if len(self.brain_shift_data) < 2:
+        if not len(self.brain_shift_data):
             raise ValueError("Not enough shift steps in brain_shift_data.")
+
+        self.stage = stage_utils.get_current_stage()
 
     def _setup_scene(self):
         """
@@ -437,7 +443,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         print(f"Distance from tooltip to tumor centroid: {to_tumor_actual}")
         self.boundary_check_vessel()
         self.boundary_check_tumor()  # Check if the raycast hits the vessel or tumor
-        self.brain_shift()
+        self.get_vessel_points()
         #collision_scores = self.get_real_time_collision_scores()  # shape: (N,)
         #print(f"Distance to tumor: {tip_to_tumor}")
         obs = torch.cat(
@@ -649,16 +655,31 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         return mean_dists
 
-    def brain_shift(self):
+    def brain_shift(self, points_attr, original_np, env_id):
+        new_np = self.brain_shift_data[env_id][0]
+        print(f"[INFO] [Env {env_id}] Original points shape: {original_np.shape}, New points shape: {new_np.shape}")
+        assert new_np.shape == original_np.shape, f"Shape mismatch at env {env_id} ({new_np.shape} vs {original_np.shape})"
+        usd_pts = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in new_np]
+        points_attr.Set(usd_pts)
+        stage_utils.update_stage()
+        displacement = np.linalg.norm(new_np - original_np, axis=1)
+        changed_mask = displacement > 1e-5
+        changed_percent = 100.0 * np.sum(changed_mask) / displacement.shape[0]
+        print(f"[INFO] [Env {env_id}] Vertices changed: {changed_percent:.2f}%")
+        print(f"[INFO] [Env {env_id}] Mean displacement: {np.mean(displacement):.6f}")
+        print(f"[INFO] [Env {env_id}] Max displacement:  {np.max(displacement):.6f}")
+
+    def get_vessel_points(self):
         try:
-            stage = stage_utils.get_current_stage()
+            
             # for prim in stage.Traverse():
             #     if prim.IsA(UsdGeom.Mesh):
             #         print(f"[DEBUG] Found UsdGeom.Mesh at {prim.GetPath()}")
             #         print(f"[DEBUG] Found prim: {prim.GetPath()} of type {prim.GetTypeName()}")
+            self.stage = stage_utils.get_current_stage()
             for i in range(self.num_envs):
                 prim_path = f"/World/envs/env_{i}/Vessel/Vessels/Vessels"
-                raw_prim = stage.GetPrimAtPath(prim_path)
+                raw_prim = self.stage.GetPrimAtPath(prim_path)
                 prim = UsdGeom.Mesh(raw_prim)
                 points_attr = prim.GetPointsAttr()
                 if not points_attr.IsDefined():
@@ -669,7 +690,10 @@ class BiopsyDirectEnv(DirectRLEnv):
                 if original_np.size == 0:
                     print(f"[ERROR] No points found in mesh at {prim_path}")
                     continue
-                print(f"[DEBUG] Original points shape: {original_np.shape} at {prim_path}")
+                elif original_np.size:
+                    print(f"[DEBUG] Original points shape: {original_np.shape} at {prim_path}")
+                    self.brain_shift(points_attr, original_np, i)
+
         except Exception as e:
             print(f"[ERROR] Failed to access mesh points: {e}")
         
