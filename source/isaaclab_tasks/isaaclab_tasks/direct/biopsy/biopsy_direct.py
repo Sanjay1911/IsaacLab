@@ -307,7 +307,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Brain Shift 
         self.brain_shift_data = []
-        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations_10envs.pkl")
+        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations10_10envs.pkl")
         print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
         for env_id in range(len(shift_data)):
             try:
