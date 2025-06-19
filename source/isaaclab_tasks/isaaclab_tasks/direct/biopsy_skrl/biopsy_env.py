@@ -660,6 +660,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         # --- Tumor geometry ---
         # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
         depth_to_tumor = self.distance_to_tumor()  # [B]
+        if depth_to_tumor.ndim == 1:
+            depth_to_tumor = depth_to_tumor.unsqueeze(-1) # Ensure it's [B, 1] for consistency
         tip_to_vessel = self.distance_to_vessel()  # [B]
         print(f"Distance to tumor: {depth_to_tumor}, Distance to vessel: {tip_to_vessel}")
 
@@ -669,8 +671,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         if pcd_vessels is None:
             pcd_vessels = torch.zeros((self.num_envs, 64, 3), device=self.device)
         elif pcd_vessels.ndim == 2:
-            pcd_vessels = pcd_vessels.unsqueeze(0)  # (1, 64, 3)
-            omni.log.info(f"PCD Vessel reshaped to: {pcd_vessels.shape}")
+            # duplicate same PCD for all envs
+            pcd_vessels = pcd_vessels.unsqueeze(0).repeat(self.num_envs, 1, 1)
+        elif pcd_vessels.shape[0] != self.num_envs:
+            raise ValueError(f"Expected pcd_vessels to have {self.num_envs} samples, got {pcd_vessels.shape}")
+
 
         # --- Confidence score (simple heuristic) ---
         vessel_penalty = (tip_to_vessel <= 0.005).float()  # e.g., if close to vessel
@@ -697,6 +702,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         #path_one_hot = torch.nn.functional.one_hot(self.active_path_idx, num_classes=3).float()  # [B, 3]
 
         obs = {"tooltip_position": self.tool_tip_pos, "tooltip_quaternion": self.tool_tip_quat, "raycaster": pcd_vessels, "depth_tumor": depth_to_tumor}  # "trial": try_history, 
+        for k, v in obs.items():
+            print(f"{k}: {v.shape}")
+
         return {"policy": obs}
 
 
