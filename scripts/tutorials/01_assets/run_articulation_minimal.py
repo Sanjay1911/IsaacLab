@@ -530,7 +530,7 @@ def draw_lines(start, end, color):
     )
 
 def draw_points(points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):
-    draw.clear_points()
+    #draw.clear_points()
     point_list = [tuple(p) for p in points_np]
     colors = [color] * len(point_list)
     sizes = [size] * len(point_list)
@@ -616,7 +616,7 @@ def main():
     sim = sim_utils.SimulationContext(sim_cfg)
     # Set main camera
     sim.set_camera_view([2.0, 1.0, 2.0], [0.0, 0.0, 0.5])
-    scene_cfg = MinimalSceneCfg(num_envs=10, env_spacing=ENV_SPACING, replicate_physics=False)
+    scene_cfg = MinimalSceneCfg(num_envs=1, env_spacing=ENV_SPACING, replicate_physics=False)
     scene = InteractiveScene(scene_cfg)
     sim.reset()
     mesh_prim = sim_utils.find_matching_prims(prim_path_regex="/World/envs/env_.*/Tumor")
@@ -624,7 +624,7 @@ def main():
         print("[INFO] Mesh Prim: ", prim, prim.GetTypeName())
         print("[INFO] Mesh Prim Children: ", prim.GetAllChildren())
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
-    frame_marker_cfg.markers["frame"].scale = (0.015, 0.015, 0.015)
+    frame_marker_cfg.markers["frame"].scale = (0.005, 0.005, 0.005)
     needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/needle"))
     camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
     num_envs = scene.num_envs
@@ -638,6 +638,7 @@ def main():
     print("Needle orientation (quat):", needle_quat)
     camera = scene["raycast_camera"]
     tumor = scene["tumor"]
+    pc = o3d.geometry.PointCloud()
     #test_cube = scene["test_cube"]
     env_data = {}
     print(camera._view)
@@ -728,9 +729,9 @@ def main():
         for i in range(min(num_envs, len(data))):
             print(f"[INFO] Loading data for env {i}")
             try:
-                env_data = data[i]
+                env_data = data[i + 1]
                 for key in ["tumor_position", "tumor_quat", "tumor_centroid", "scored_paths", "top_entry_points", "start_pose"]:
-                    assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
+                    assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i+1}"
                 tumor_positions.append(env_data["tumor_position"])
                 tumor_quaternions.append(env_data["tumor_quat"])
                 tumor_centroids.append(env_data["tumor_centroid"])
@@ -765,7 +766,8 @@ def main():
             for env_id, points in enumerate(tumor_centroids):
                 offset = offsets[env_id]  # shape (3,)
                 offset_points = points + offset  # (N, 3) + (3,) → (N, 3)
-                draw_points([offset_points], color=(0.0, 0.0, 1.0, 1.0), size=4.0)        
+                draw_points([offset_points], color=(0.0, 0.0, 1.0, 1.0), size=40.0)   
+                print(f"[INFO] Drawing tumor centroid at {offset_points} in env {env_id}")     
         except Exception as e:
             print(f"[ERROR] Failed to draw tumor centroids: {e}")
             pass
@@ -800,23 +802,57 @@ def main():
         except Exception as e:
             print(f"[ERROR] ENV {i}: Failed to apply scene offsets: {e}")
 
+        # try:
+        #     print("-------------------")
+        #     tumor_positions_tensor = torch.tensor(np.array(tumor_positions), dtype=torch.float32)
+        #     tumor_quaternions_tensor = torch.tensor(np.array(tumor_quaternions), dtype=torch.float32)
+        #     print("Tumor positions from pickle:", tumor_positions_tensor)
+        #     assert tumor_positions_tensor.shape[0] == num_envs
+        #     assert tumor_quaternions_tensor.shape[0] == num_envs
+        #     poses_pos, poses_quat = tumor.get_local_poses()
+        #     print("Tumor Pose Positions before:", poses_pos)
+        #     #print("Tumor Pose Quaternions Shape:", poses_quat.shape)
+        #     #print("Tumor Position Tensor:", poses_pos)
+        #     tumor.set_local_poses(tumor_positions_tensor, tumor_quaternions_tensor, [0,1])
+        #     print("Tumor Pose Positions after:", tumor.get_local_poses())
+        #     print("-------------------")
+        # except Exception as e:
+        #     print(f"[ERROR] ENV {i}: Failed to set tumor pose: {e}")
+        #     pass
+    
         try:
             print("-------------------")
+            
+            # Convert tumor positions and quaternions to tensors
             tumor_positions_tensor = torch.tensor(np.array(tumor_positions), dtype=torch.float32)
             tumor_quaternions_tensor = torch.tensor(np.array(tumor_quaternions), dtype=torch.float32)
-            print("Tumor positions:", tumor_positions_tensor.shape)
+            
+            print("Tumor positions from pickle:", tumor_positions_tensor)
+
+            # Ensure the number of tumor positions matches the number of environments
             assert tumor_positions_tensor.shape[0] == num_envs
             assert tumor_quaternions_tensor.shape[0] == num_envs
+            
+            # Get the current local poses
             poses_pos, poses_quat = tumor.get_local_poses()
-            #print("Tumor Pose Positions Shape:", poses_pos.shape)
-            #print("Tumor Pose Quaternions Shape:", poses_quat.shape)
-            #print("Tumor Position Tensor:", poses_pos)
-            tumor.set_local_poses(tumor_positions_tensor, tumor_quaternions_tensor)
-            print(tumor.get_local_poses())
+            print("Tumor Pose Positions before:", poses_pos)
+
+            # Apply environment-wise offsets to each tumor position
+            for env_id in range(num_envs):
+                # Add the corresponding offset for this environment to the tumor position
+                offset = offsets[env_id]  # Get the offset for the current environment
+                offset = torch.tensor(offset, dtype=torch.float32)  # Convert to tensor
+                print(f"[INFO] Applying offset {offset} to tumor position for env {env_id}")
+                tumor_positions_tensor[env_id]  # += offset  # Add offset to the tumor position
+                # Set the new positions and quaternions to the tumor
+                tumor.set_local_poses(tumor_positions_tensor, tumor_quaternions_tensor, [env_id])
+            
+            print("Tumor Pose Positions after:", tumor.get_local_poses())
             print("-------------------")
         except Exception as e:
             print(f"[ERROR] ENV {i}: Failed to set tumor pose: {e}")
             pass
+
     
     if INCLUDE_SHIFT:
         brain_shift_data = []
@@ -825,7 +861,7 @@ def main():
         for env_id in range(min(1, len(shift_data))):
             try:
                 print(f"[INFO] Extracting top-1 shift steps for env {env_id}")
-                env = shift_data[env_id]
+                env = shift_data[env_id + 1]
                 top_entry = env[0]  # top-ranked entry out of 10
                 for step_id in range(50):
                     step = top_entry[0][0][step_id]
@@ -866,9 +902,14 @@ def main():
             for i in range(num_envs):
                 tooltip_pos = start_positions[i]
                 tooltip_quat = start_quaternions[i]
-                tooltip_pos_world = tooltip_pos
+                tooltip_pos_world = torch.tensor([tooltip_pos], dtype=torch.float64, device=sim.device)
                 T_world_tooltip = make_transform(tooltip_pos_world, tooltip_quat)
-
+                closer_distance = 0.009  # 5 mm
+                tooltip_forward_offset = torch.tensor([0.0, -closer_distance, 0.0], dtype=torch.float64)
+                tooltip_rotation = T_world_tooltip[:3, :3]
+                world_offset = tooltip_rotation @ tooltip_forward_offset
+                tooltip_pos_world = tooltip_pos_world + world_offset.to(device=sim.device)
+                T_world_tooltip = make_transform(tooltip_pos_world, tooltip_quat)
                 # Compute holder base pose
                 T_world_holder = T_world_tooltip @ T_tooltip_to_holder
                 holder_pos, holder_quat = extract_pose_from_transform(T_world_holder)
@@ -879,6 +920,8 @@ def main():
             print("[INFO]: Default root state: ", root_state) 
             holder_pos_trch.to(device=sim.device)
             holder_quat_trch.to(device=sim.device)
+            # add offset to holder position
+
             root_state[:, :3] = holder_pos_trch
             root_state[:, 3:7] = holder_quat_trch
             root_state[:, 7:] = torch.zeros_like(root_state[:, 7:])
@@ -891,7 +934,7 @@ def main():
             joint_pos, joint_vel = robot.data.default_joint_pos.clone(), robot.data.default_joint_vel.clone()
             joint_pos[:, 0] = -0.5
             joint_vel[:] = 0.0
-            robot.write_joint_state_to_sim(joint_pos, joint_vel)
+            #robot.write_joint_state_to_sim(joint_pos, joint_vel)
             robot.set_joint_position_target(joint_pos)
             robot.write_data_to_sim()
             sim.step()
@@ -944,12 +987,24 @@ def main():
                 height=0.05
             )
 
+            if filtered_hits.shape[0] == 0:
+                print(f"[env {env_id}] No hits inside cylinder.")
+                continue
+            else:
+                pc.points = o3d.utility.Vector3dVector(filtered_hits)
+                down_pc = pc.farthest_point_down_sample(32)
+                sparse_points = np.asarray(down_pc.points)
+                print(f"[env {env_id}] Sparse points shape: {sparse_points.shape}")
+                draw_points(sparse_points, color=(1.0, 0.0, 1.0, 1.0), size=4.0)  
+
             print(f"[env {env_id}] Hits inside cylinder: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-            draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0)  # Optional: if you want to visualize
+            #draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0)  # Optional: if you want to visualize
+
+
 
         if valid_hits_np.shape[0] != 0:
             print("Valid hits shape:", valid_hits_np.shape)
-            #save_point_cloud_ply("/home/sanjay/thesis_replications/forked/IsaacLab/custom/raycast_hits_maxdist.ply", valid_hits_np)
+            save_point_cloud_ply("/home/sanjay/thesis_replications/forked/IsaacLab/custom/env0_pcd_1706.ply", filtered_hits)
         # with open(os.path.join(output_dir, "depth_info.csv"), "a") as f:
         #     f.write(f"{count},{mean_distance.item()},{center_distance.item()},{num_valid/total_rays},{100.0 * num_valid / total_rays:.2f}%\n")
         #print("-------------------------------")
