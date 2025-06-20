@@ -10,9 +10,11 @@ torch.set_printoptions(profile="full")
 import sys
 import numpy as np
 np.set_printoptions(threshold=sys.maxsize)
+import traceback
 from pxr import UsdGeom, UsdPhysics, Gf
 import open3d as o3d
 from gym.spaces import Box, Dict, Discrete, MultiBinary, MultiDiscrete, Tuple
+import gymnasium as gym
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
 import math
@@ -279,6 +281,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.tumor_centroids = []
         self.scored_paths = []
         self.tumor_top_entry_points = []
+        self.start_pose = []
         self.start_positions = []
         self.start_quaternions = []
         self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/pickle_finale/rl_dataset_10envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
@@ -293,6 +296,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 self.tumor_centroids.append(env_data["tumor_centroid"])
                 self.scored_paths.append(env_data["scored_paths"])
                 self.tumor_top_entry_points.append(env_data["top_entry_points"])
+                self.start_pose.append(env_data["start_pose"])
                 self.start_positions.append([pose["position"] for pose in env_data["start_pose"]])
                 self.start_quaternions.append([pose["quaternion"] for pose in env_data["start_pose"]])
             except KeyError as e:
@@ -304,6 +308,15 @@ class BiopsyDirectEnv(DirectRLEnv):
         
         omni.log.info(f"Start positions count: {len(self.start_positions)}")
         omni.log.info("Tumor data for envs loaded successfully.")
+        self.pos_tensor = torch.zeros((self.num_envs, 3), dtype=torch.float64, device=self.device)
+        self.quat_tensor = torch.zeros((self.num_envs, 4), dtype=torch.float64, device=self.device)
+        # Convert start poses to lookup tensors
+        self.start_poses = torch.zeros((self.num_envs, len(self.start_positions[0]), 7), dtype=torch.float32, device=self.device)  # (envs, poses, 7)
+        for i in range(self.num_envs):
+            for j in range(len(self.start_positions[0])):
+                self.start_poses[i, j, :3] = torch.tensor(self.start_positions[i][j], device='cuda:0', dtype=torch.float32)
+                self.start_poses[i, j, 3:] = torch.tensor(self.start_quaternions[i][j], device='cuda:0', dtype=torch.float32)
+
         #self.draw_entry_points()
         #self.draw_path()
         self.draw_attempt = 0
@@ -384,6 +397,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         - orientation remains fixed to preop base orientation
         """
         self.actions = actions.clone()  # Store the actions for later use
+        print(f"Picked actions: {self.actions}")
         # actions = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
 
         # max_translation = self.cfg.action_scale
@@ -392,11 +406,36 @@ class BiopsyDirectEnv(DirectRLEnv):
         # self.current_pos = delta_pos  # (B, 3)
 
     def _apply_action(self):
-        if isinstance(self.single_action_space, Box):
+        omni.log.info(f"Applying action for {self.num_envs} environments.")
+        omni.log.info(f"Type of single action space: {type(self.single_action_space)}")
+        if isinstance(self.single_action_space, gym.spaces.Box):
+            omni.log.info(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
             self.current_pos = self.cfg.action_scale * self.actions[:, :3]
-        elif isinstance(self.single_action_space, Discrete):
-            print("Trying to apply actions but currenty nothing is defined")
-            pass
+        # === Apply action for Discrete control ===
+        elif isinstance(self.single_action_space, gym.spaces.Discrete):
+            for i in range(self.num_envs):
+                action_index = self.actions[i, 0].item()
+                print(f"Env {i} - Chosen action index: {action_index}")
+
+                pose = self.start_poses[i, action_index]
+                print(f"Env {i} - Chosen pose: {pose}")
+
+                quat, pos = self.tooltip_to_holder(pose[3:], pose[:3])
+                print(f"Env {i} - Tooltip pos: {pos}, quat: {quat}")
+                self.pos_tensor[i] = pos
+                self.quat_tensor[i] = quat
+            current_root_state = self._robot.data.default_root_state.clone()
+            current_root_state[:, :3] = self.pos_tensor
+            current_root_state[:, 3:7] = self.quat_tensor
+            current_root_state[:, 7:] = 0.0  # Set velocity to zero
+
+            try:
+                self._robot.write_root_pose_to_sim(current_root_state[:, :7])
+                self._robot.write_root_velocity_to_sim(current_root_state[:, 7:])
+                print(f"Env {i}: write_root_pose_to_sim successful")
+            except Exception as e:
+                print(f"Env {i}: write_root_pose_to_sim failed due to: {e}")
+                traceback.print_exc()
         elif isinstance(self.single_action_space, Dict):
             pass
 
@@ -667,7 +706,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         pcd_vessels = self.boundary_check_vessel()
         omni.log.info(f"PCD Vessel Shape: {pcd_vessels.shape if pcd_vessels is not None else 'None'}")
-        omni.log.info(f"PCD Vessel: {pcd_vessels.ndim}")
+        #omni.log.info(f"PCD Vessel: {pcd_vessels.ndim}")
         if pcd_vessels is None:
             pcd_vessels = torch.zeros((self.num_envs, 64, 3), device=self.device)
         elif pcd_vessels.ndim == 2:
@@ -877,14 +916,15 @@ class BiopsyDirectEnv(DirectRLEnv):
             )
 
             print(f"[env {env_id}] Hits inside cylinder Vessel: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-            self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
-            sparse_points = self.pcd.farthest_point_down_sample(64)
-            omni.log.info(f"type: {type(sparse_points)}")
-            sparse_points = torch.tensor(np.asarray(sparse_points.points), dtype=torch.float32, device=self.device)
+
             # sparse_points_np = np.asarray(downsampled_pcd.points)
             # print(f"[env {env_id}] Sparse points shape: {sparse_points.shape}")
             if valid_hits_np.shape[0] != 0:
                 print("Valid hits shape:", valid_hits_np.shape, filtered_hits.shape)
+                self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
+                sparse_points = self.pcd.farthest_point_down_sample(64)
+                omni.log.info(f"type: {type(sparse_points)}")
+                sparse_points = torch.tensor(np.asarray(sparse_points.points), dtype=torch.float32, device=self.device)
                 return sparse_points
                 #self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
                 # Only draw cylinder for vessel hits (if needed)

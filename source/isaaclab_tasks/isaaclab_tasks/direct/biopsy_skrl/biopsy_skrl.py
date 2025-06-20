@@ -14,8 +14,8 @@ from skrl.utils import set_seed
 from skrl.utils.spaces.torch import unflatten_tensorized_space  # https://skrl.readthedocs.io/en/latest/api/utils/spaces.html#skrl.utils.spaces.torch.unflatten_tensorized_space 
 from gymnasium import spaces
 # seed for reproducibility
-set_seed()  # e.g. `set_seed(42)` for fixed seed
-
+set_seed(42)  # e.g. `set_seed(42)` for fixed seed
+DEBUG = False  # Set to True to enable debug prints
 
 class PointNetExtractor(nn.Module):
     def __init__(self, point_channel=3, output_dim=256):
@@ -73,7 +73,6 @@ class ContinuosActionPolicy(GaussianMixin, Model):
         if pcd.ndim == 2:
             pcd = pcd.unsqueeze(0)  # Ensure batch dimension exists
 
-        print("Raycaster shape:", pcd.shape)  # Should be [B, 64, 3]
         pointnet_features = self.pointnet(pcd)  # -> [B, 256]
 
         # Other inputs (make sure all are [B, D])
@@ -89,8 +88,6 @@ class ContinuosActionPolicy(GaussianMixin, Model):
         if tooltip_quat.ndim == 1:
             tooltip_quat = tooltip_quat.unsqueeze(0)
 
-        print("Other features shapes:", 
-              depth_tumor.shape, tooltip_pos.shape, tooltip_quat.shape)  # Debug
         # trial = states["trial"]
         # if trial.ndim == 0:
         #     trial = trial.unsqueeze(0)
@@ -99,10 +96,13 @@ class ContinuosActionPolicy(GaussianMixin, Model):
         # Concatenate all features
         other_features = torch.cat([depth_tumor, tooltip_pos, tooltip_quat], dim=-1)  # [B, 1 + 7 = 8]
         x = torch.cat([pointnet_features, other_features], dim=-1)  # [B, 256 + 8]
-        print(f"PointNet features: {pointnet_features.shape}")
-        print(f"Other features: {other_features.shape}")
-        print(f"Input to actor: {x.shape}")
-        print("Concatenated features shape:", x.shape)
+        if DEBUG:
+            print("Raycaster shape:", pcd.shape)  # Should be [B, 64, 3]
+            print(f"PointNet features: {pointnet_features.shape}")
+            print("Other features shapes:",depth_tumor.shape, tooltip_pos.shape, tooltip_quat.shape)  # Debug
+            print(f"Other features: {other_features.shape}")
+            print(f"Input to actor: {x.shape}")
+            print("Concatenated features shape:", x.shape)
 
         x = self.actor(x)
         return self.mean_layer(x), self.log_std_parameter, {}
@@ -133,7 +133,6 @@ class DiscreteActionPolicy(CategoricalMixin, Model):
         if pcd.ndim == 2:
             pcd = pcd.unsqueeze(0)  # Ensure batch dimension exists
 
-        print("Raycaster shape:", pcd.shape)  # Should be [B, 64, 3]
         pointnet_features = self.pointnet(pcd)  # -> [B, 256]
 
         # Other inputs (make sure all are [B, D])
@@ -149,8 +148,6 @@ class DiscreteActionPolicy(CategoricalMixin, Model):
         if tooltip_quat.ndim == 1:
             tooltip_quat = tooltip_quat.unsqueeze(0)
 
-        print("Other features shapes:", 
-              depth_tumor.shape, tooltip_pos.shape, tooltip_quat.shape)  # Debug
         # trial = states["trial"]
         # if trial.ndim == 0:
         #     trial = trial.unsqueeze(0)
@@ -159,11 +156,13 @@ class DiscreteActionPolicy(CategoricalMixin, Model):
         # Concatenate all features
         other_features = torch.cat([depth_tumor, tooltip_pos, tooltip_quat], dim=-1)  # [B, 1 + 7 = 8]
         x = torch.cat([pointnet_features, other_features], dim=-1)  # [B, 256 + 8]
-        print(f"PointNet features: {pointnet_features.shape}")
-        print(f"Other features: {other_features.shape}")
-        print(f"Input to actor: {x.shape}")
-        print("Concatenated features shape:", x.shape)
-
+        if DEBUG:
+            print("Raycaster shape:", pcd.shape)  # Should be [B, 64, 3]
+            print(f"PointNet features: {pointnet_features.shape}")
+            print("Other features shapes:",depth_tumor.shape, tooltip_pos.shape, tooltip_quat.shape)  # Debug
+            print(f"Other features: {other_features.shape}")
+            print(f"Input to actor: {x.shape}")
+            print("Concatenated features shape:", x.shape)
         x = self.actor(x)
         return x, {}
 
@@ -191,12 +190,13 @@ env = load_isaaclab_env(task_name="Isaac-Biopsy-Direct-Dict-Discrete-v0")
 env = wrap_env(env)
 
 device = env.device
-if isinstance(env.action_space, spaces.Discrete):
-    print("Discrete action space detected, using CategoricalMixin")
-elif isinstance(env.action_space, spaces.Box):
-    print("Continuous action space detected, using GaussianMixin")
-elif isinstance(env.action_space, spaces.Dict):
-    print("Dict action space detected, using GaussianMixin for each action space")
+if DEBUG:
+    if isinstance(env.action_space, spaces.Discrete):
+        print("Discrete action space detected, using CategoricalMixin")
+    elif isinstance(env.action_space, spaces.Box):
+        print("Continuous action space detected, using GaussianMixin")
+    elif isinstance(env.action_space, spaces.Dict):
+        print("Dict action space detected, using GaussianMixin for each action space")
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
 memory = RandomMemory(memory_size=16, num_envs=env.num_envs, device=device)
@@ -216,9 +216,9 @@ elif isinstance(env.action_space, spaces.Box):
     models["policy"] = ContinuosActionPolicy(env.observation_space, env.action_space, device)
 
 models["value"] = ValueModel(env.observation_space, env.action_space, device)  # separate value model
-print("PCD:", )
-print("Observation space:", env.observation_space)
-print("Action space:", env.action_space)
+if DEBUG:
+    print("Observation space:", env.observation_space)
+    print("Action space:", env.action_space)
 
 
 # configure and instantiate the agent (visit its documentation to see all the options)

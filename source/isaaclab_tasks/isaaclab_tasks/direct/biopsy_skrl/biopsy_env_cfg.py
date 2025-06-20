@@ -13,7 +13,7 @@ import numpy as np
 
 from isaaclab_tasks.direct.biopsy_skrl.biopsy_env import BiopsyDirectEnvCfg
 
-NUM_POSES = 50
+NUM_POSES = 10
 NUM_TRIALS = 5
 
 
