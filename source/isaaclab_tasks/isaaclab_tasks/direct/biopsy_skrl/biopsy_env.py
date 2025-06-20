@@ -408,6 +408,7 @@ class BiopsyDirectEnv(DirectRLEnv):
     def _apply_action(self):
         omni.log.info(f"Applying action for {self.num_envs} environments.")
         omni.log.info(f"Type of single action space: {type(self.single_action_space)}")
+        offsets = self.scene.env_origins[self.env_ids]
         if isinstance(self.single_action_space, gym.spaces.Box):
             omni.log.info(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
             self.current_pos = self.cfg.action_scale * self.actions[:, :3]
@@ -425,7 +426,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 self.pos_tensor[i] = pos
                 self.quat_tensor[i] = quat
             current_root_state = self._robot.data.default_root_state.clone()
-            current_root_state[:, :3] = self.pos_tensor
+            current_root_state[:, :3] = self.pos_tensor + offsets
             current_root_state[:, 3:7] = self.quat_tensor
             current_root_state[:, 7:] = 0.0  # Set velocity to zero
 
