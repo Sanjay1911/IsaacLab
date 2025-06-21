@@ -64,7 +64,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     skull = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Skull",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
+            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -72,7 +72,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
+            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -88,7 +88,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -265,7 +265,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"Robot Tool Tip Position before extension: {self._robot.data.body_pos_w[:, self.tooltip_index]}")
         # Extend the needle for checking if raycast camera hits the tumor
         joint_pos, joint_vel = self._robot.data.default_joint_pos.clone(), self._robot.data.default_joint_vel.clone()
-        joint_pos[:, 0] = -0.17
+        joint_pos[:, 0] = -0.0
         joint_vel[:] = 0.0
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel)
         self._robot.set_joint_position_target(joint_pos)
@@ -284,7 +284,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.start_pose = []
         self.start_positions = []
         self.start_quaternions = []
-        self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/pickle_finale/rl_dataset_10envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
+        self.tumor_pickle = load_pickle("custom/path_comparison/pickle_finale/rl_dataset_10envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
         for i in range(min(self.num_envs, len(self.tumor_pickle))):
             omni.log.info(f"Loading tumor data for env: {i}")
             try:
@@ -305,7 +305,8 @@ class BiopsyDirectEnv(DirectRLEnv):
                 omni.log.warn(f"AssertionError: {e} for env {i}. Tumor data may be incomplete.")
             except Exception as e:
                 omni.log.warn(f"Exception: {e} for env {i}. Tumor data may be incomplete.")
-        
+
+
         omni.log.info(f"Start positions count: {len(self.start_positions)}")
         omni.log.info("Tumor data for envs loaded successfully.")
         self.pos_tensor = torch.zeros((self.num_envs, 3), dtype=torch.float64, device=self.device)
@@ -316,6 +317,11 @@ class BiopsyDirectEnv(DirectRLEnv):
             for j in range(len(self.start_positions[0])):
                 self.start_poses[i, j, :3] = torch.tensor(self.start_positions[i][j], device='cuda:0', dtype=torch.float32)
                 self.start_poses[i, j, 3:] = torch.tensor(self.start_quaternions[i][j], device='cuda:0', dtype=torch.float32)
+        for i in range(self.num_envs):
+            print(f"Env {i}: unique poses = {len(set(tuple(p.tolist()) for p in self.start_poses[i]))}")
+        for i in range(1):  # check env 0
+            for j in range(10):  # assuming 10 poses
+                print(f"start_poses[{i}, {j}] = {self.start_poses[i, j]}")
 
         #self.draw_entry_points()
         #self.draw_path()
@@ -334,7 +340,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Brain Shift 
         self.brain_shift_data = []
-        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations10_10envs.pkl")
+        shift_data = load_pickle("custom/path_comparison/path_comparison/precomputed_brain_deformations10envs.pkl")
         print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
         for env_id in range(self.scene.num_envs):
             try:
@@ -373,10 +379,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.pose_applied = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.trial_phase = ["preop"] * self.num_envs
         self.trial_done = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
-        
-        self.debug_mode = True
-        self.debug_force_fail = False
-        self.debug_force_success = True
+
 
 
     def _setup_scene(self):
@@ -406,6 +409,81 @@ class BiopsyDirectEnv(DirectRLEnv):
         # self.current_pos = delta_pos  # (B, 3)
 
     def _apply_action(self):
+        omni.log.info(f"Applying action for {self.num_envs} environments.")
+        omni.log.info(f"Type of single action space: {type(self.single_action_space)}")
+        offsets = self.scene.env_origins[self.env_ids]
+
+        if isinstance(self.single_action_space, gym.spaces.Box):
+            omni.log.info(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
+            self.current_pos = self.cfg.action_scale * self.actions[:, :3]
+
+        elif isinstance(self.single_action_space, gym.spaces.Discrete):
+            for i in range(self.num_envs):
+                env_id = self.env_ids[i]
+
+                # Apply pose only if not already applied
+                if not self.pose_applied[env_id]:
+                    action_index = self.actions[env_id, 0].item()
+                    print(f"Env {env_id} - Chosen action index: {action_index}")
+
+                    pose = self.start_poses[env_id, action_index]
+                    quat, pos = self.tooltip_to_holder(pose[3:], pose[:3])
+                    print(f"Env {env_id} - Tooltip pos: {pos}, quat: {quat}")
+
+                    self.pos_tensor[env_id] = pos
+                    self.quat_tensor[env_id] = quat
+                    self.pose_applied[env_id] = True  # Lock pose application
+
+            # Apply updated poses only to those that were changed
+            selected_envs = self.env_ids[self.pose_applied[self.env_ids]]
+            if selected_envs.numel() > 0:
+                root_state = self._robot.data.default_root_state.clone()
+                omni.log.info(f"Root state before applying pose:{root_state[selected_envs, :]}" )
+                omni.log.info(f"Offsets: {offsets[selected_envs]}")
+                omni.log.info(f"Type of offsets: {type(offsets[selected_envs])}, shape: {offsets[selected_envs].shape}, dtype: {offsets[selected_envs].dtype}")
+                omni.log.info(f"Type of pos_tensor: {type(self.pos_tensor[selected_envs])}, shape: {self.pos_tensor[selected_envs].shape}, dtype: {self.pos_tensor[selected_envs].dtype}")
+                print(f"Pose being appllied to envs: {selected_envs}, pos_tensor: {self.pos_tensor[selected_envs]}, quat_tensor: {self.quat_tensor[selected_envs]}")
+                root_state[selected_envs, :3] = self.pos_tensor[selected_envs].to(dtype=torch.float32) + offsets[selected_envs]
+                root_state[selected_envs, 3:7] = self.quat_tensor[selected_envs].to(dtype=torch.float32)
+                root_state[selected_envs, 7:] = 0.0  # Reset velocity
+
+                try:
+                    self._robot.write_root_pose_to_sim(root_state[selected_envs, :7], env_ids=selected_envs)
+                    self._robot.write_root_velocity_to_sim(root_state[selected_envs, 7:], env_ids=selected_envs)
+                    print(f"Applied pose to envs: {selected_envs}")
+                except Exception as e:
+                    print(f"Pose application failed due to: {e}")
+                    traceback.print_exc()
+
+        elif isinstance(self.single_action_space, Dict):
+            pass
+
+        # === Insertion logic ===
+        slider_idx = self._robot.find_joints("holder_needle_slider")[0]
+        needle_step = 0.0002
+
+        retracting = self.retracting[self.env_ids]
+        self.robot_dof_targets[self.env_ids[~retracting], slider_idx] -= needle_step
+        self.robot_dof_targets[self.env_ids[retracting], slider_idx] += 2 * needle_step
+
+        # === Phase switching and insertion completion ===
+        depths = self.robot_dof_targets[self.env_ids, slider_idx]
+        for i, env_id in enumerate(self.env_ids):
+            if depths[i] <= -0.09:
+                if self.trial_phase[env_id] == "preop":
+                    self.trial_phase[env_id] = "rl"
+                    self.pose_applied[env_id] = False  # Unlock for next pose
+                    self.robot_dof_targets[env_id, slider_idx] = 0.0  # Reset depth
+                    self.retracting[env_id] = True
+                else:
+                    self.trial_done[env_id] = True
+
+            if self.retracting[env_id] and depths[i] >= 0.0:
+                self.retracting[env_id] = False
+
+        self._robot.set_joint_position_target(self.robot_dof_targets)
+
+    def __apply_action(self):
         omni.log.info(f"Applying action for {self.num_envs} environments.")
         omni.log.info(f"Type of single action space: {type(self.single_action_space)}")
         offsets = self.scene.env_origins[self.env_ids]
@@ -439,6 +517,53 @@ class BiopsyDirectEnv(DirectRLEnv):
                 traceback.print_exc()
         elif isinstance(self.single_action_space, Dict):
             pass
+        # === Insertion logic ===
+        slider_idx = self._robot.find_joints("holder_needle_slider")[0]
+        needle_step = 0.0002
+
+        retracting = self.retracting[self.env_ids]
+        self.robot_dof_targets[self.env_ids[~retracting], slider_idx] -= needle_step
+        self.robot_dof_targets[self.env_ids[retracting], slider_idx] += 2 * needle_step
+
+        # Debugging: Log the robot's joint target positions if in debug mode
+        if self.debug_mode:
+            print(f"DEBUG: Robot joint targets: {self.robot_dof_targets}")
+
+        # === Phase switch ===
+        depths = self.robot_dof_targets[self.env_ids, slider_idx]
+        for i, env_id in enumerate(self.env_ids):
+            if depths[i] <= -0.09:
+                if self.trial_phase[env_id] == "preop":
+                    # Debugging: Log trial phase transition
+                    if self.debug_mode:
+                        print(f"DEBUG: Transitioning trial phase for env {env_id} to RL.")
+                    self.trial_phase[env_id] = "rl"
+                    self.pose_applied[env_id] = False
+                    self.robot_dof_targets[env_id, slider_idx] = 0.0
+                    self.retracting[env_id] = True
+                else:
+                    self.trial_done[env_id] = True
+                    # Debugging: Log trial completion for env
+                    if self.debug_mode:
+                        print(f"DEBUG: Trial done for env {env_id}.")
+            if self.retracting[env_id] and depths[i] >= 0.0:
+                self.retracting[env_id] = False
+
+        # Handle debug failure condition
+        if self.debug_force_fail:
+            if self.debug_mode:
+                print("DEBUG: Forcing failure in the current insertion attempt.")
+            # Force a failure behavior, e.g., reset or stop further actions.
+            self.trial_done[self.env_ids] = True
+
+        # Handle debug success condition
+        if self.debug_force_success:
+            if self.debug_mode:
+                print("DEBUG: Forcing success in the current insertion attempt.")
+            self.trial_done[self.env_ids] = True
+
+        self._robot.set_joint_position_target(self.robot_dof_targets)
+
 
     def apply_action(self):
         env_ids = torch.arange(self.num_envs, device=self.device)
@@ -583,48 +708,48 @@ class BiopsyDirectEnv(DirectRLEnv):
             return holder_quat.squeeze(0), holder_pos.squeeze(0)
         return holder_quat, holder_pos
 
-    def reset_idx(self, env_ids):
-        """
-        Reset the environment and set fixed tumor positions.
-        This method ensures that the tumor position remains fixed and is set only once per environment.
-        """
-        super()._reset_idx(env_ids)
+    # def reset_idx(self, env_ids):
+    #     """
+    #     Reset the environment and set fixed tumor positions.
+    #     This method ensures that the tumor position remains fixed and is set only once per environment.
+    #     """
+    #     super()._reset_idx(env_ids)
         
-        root_state = self._robot.data.default_root_state.clone()
-        if not hasattr(self, "tumor_position_set"):
-            self.tumor_position_set = True
-            omni.log.info("Initializing tumor positions...")
-            for env_id in env_ids:
-                tumor_data = self.tumor_pickle[env_id]
-                tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device)
-                tumor_quat = torch.tensor(tumor_data["tumor_quat"], dtype=torch.float32, device=self.device)
+    #     root_state = self._robot.data.default_root_state.clone()
+    #     if not hasattr(self, "tumor_position_set"):
+    #         self.tumor_position_set = True
+    #         omni.log.info("Initializing tumor positions...")
+    #         for env_id in env_ids:
+    #             tumor_data = self.tumor_pickle[env_id]
+    #             tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device)
+    #             tumor_quat = torch.tensor(tumor_data["tumor_quat"], dtype=torch.float32, device=self.device)
 
-                self.tumor.set_local_poses(tumor_pos.unsqueeze(0), tumor_quat.unsqueeze(0), [env_id])
-                print(f"Fixed tumor position for env {env_id}: {tumor_pos}")
-        else:
-            print(f"Tumor position for environments {env_ids} remains fixed.")
+    #             self.tumor.set_local_poses(tumor_pos.unsqueeze(0), tumor_quat.unsqueeze(0), [env_id])
+    #             print(f"Fixed tumor position for env {env_id}: {tumor_pos}")
+    #     else:
+    #         print(f"Tumor position for environments {env_ids} remains fixed.")
 
-        for env_id in env_ids:
-            tumor_data = self.tumor_pickle[env_id]
-            path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
-            start_pose = tumor_data["start_pose"][path_idx]
-            start_pos = start_pose["position"].to(self.device)
-            start_quat = start_pose["quaternion"].to(self.device)
-            ttip_quat, ttip_pos = self.tooltip_to_holder(start_quat, start_pos)
-            root_state[env_id, :3] = ttip_pos
-            root_state[env_id, 3:7] = ttip_quat
-            root_state[env_id, 7:] = 0.0
-            self.active_path_idx[env_id] = path_idx
-            # Set flags and reset the environment status
-            self.trial_phase[env_id] = "preop"  # Start with preop phase
-            self.trial_done[env_id] = False  # Not done yet
-            self.pose_applied[env_id] = False  # Ensure pose isn't applied initially
-            self.retracting[env_id] = False  # Ensure retracting flag is reset
-            self.trial_counts[env_id] = 0  # Reset trial count
-        self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
-        self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
-        self._compute_intermediate_values(env_ids)
-        omni.log.info(f"Reset complete for envs: {env_ids}")
+    #     for env_id in env_ids:
+    #         tumor_data = self.tumor_pickle[env_id]
+    #         path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
+    #         start_pose = tumor_data["start_pose"][path_idx]
+    #         start_pos = start_pose["position"].to(self.device)
+    #         start_quat = start_pose["quaternion"].to(self.device)
+    #         ttip_quat, ttip_pos = self.tooltip_to_holder(start_quat, start_pos)
+    #         root_state[env_id, :3] = ttip_pos
+    #         root_state[env_id, 3:7] = ttip_quat
+    #         root_state[env_id, 7:] = 0.0
+    #         self.active_path_idx[env_id] = path_idx
+    #         # Set flags and reset the environment status
+    #         self.trial_phase[env_id] = "preop"  # Start with preop phase
+    #         self.trial_done[env_id] = False  # Not done yet
+    #         self.pose_applied[env_id] = False  # Ensure pose isn't applied initially
+    #         self.retracting[env_id] = False  # Ensure retracting flag is reset
+    #         self.trial_counts[env_id] = 0  # Reset trial count
+    #     self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
+    #     self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
+    #     self._compute_intermediate_values(env_ids)
+    #     omni.log.info(f"Reset complete for envs: {env_ids}")
 
 
     def set_tumor_positions(self):
@@ -650,27 +775,33 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         super()._reset_idx(env_ids)
         omni.log.info(f"Env ID: {env_ids}, {type(env_ids)}")
-        root_state = self._robot.data.default_root_state.clone()
-        for env_id in env_ids:
-            print("Resetting environments with IDs:", env_id)
-            env_id = int(env_id)
-            offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
-            self.trial_phase[env_id] = "preop"
-            self.trial_done[env_id] = False
-            self.pose_applied[env_id] = False
-            tumor_data = self.tumor_pickle[env_id]
-            path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
-            start_pose = tumor_data["start_pose"][path_idx]
-            start_pos = start_pose["position"].to(self.device) + offset
-            start_quat = start_pose["quaternion"].to(self.device)
-            ttip_quat, ttip_pos = self.tooltip_to_holder(start_quat, start_pos)
-            root_state[env_id, :3] = ttip_pos
-            root_state[env_id, 3:7] = ttip_quat
-            root_state[env_id, 7:] = 0.0 
-            self.active_path_idx[env_id] = path_idx
-            print(f"[env {env_id}] Using path index {path_idx} for tumor at {tumor_data['tumor_position']}")
-        self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
-        self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
+        print(f"Resetting environments with IDs: {env_ids}")
+        self.pose_applied[env_ids] = False  # Reset pose application status
+        slider_idx = self._robot.find_joints("holder_needle_slider")[0]
+        self.robot_dof_targets[env_ids, slider_idx] = 0.0
+        #self._robot.set_joint_position_target(self.robot_dof_targets)
+
+        # root_state = self._robot.data.default_root_state.clone()
+        # for env_id in env_ids:
+        #     print("Resetting environments with IDs:", env_id)
+        #     env_id = int(env_id)
+        #     offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
+        #     self.trial_phase[env_id] = "preop"
+        #     self.trial_done[env_id] = False
+        #     self.pose_applied[env_id] = False
+        #     tumor_data = self.tumor_pickle[env_id]
+        #     path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
+        #     start_pose = tumor_data["start_pose"][path_idx]
+        #     start_pos = start_pose["position"].to(self.device) + offset
+        #     start_quat = start_pose["quaternion"].to(self.device)
+        #     ttip_quat, ttip_pos = self.tooltip_to_holder(start_quat, start_pos)
+        #     root_state[env_id, :3] = ttip_pos
+        #     root_state[env_id, 3:7] = ttip_quat
+        #     root_state[env_id, 7:] = 0.0 
+        #     self.active_path_idx[env_id] = path_idx
+        #     print(f"[env {env_id}] Using path index {path_idx} for tumor at {tumor_data['tumor_position']}")
+        # self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
+        # self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
         
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         self._compute_intermediate_values(env_ids)
@@ -923,10 +1054,27 @@ class BiopsyDirectEnv(DirectRLEnv):
             if valid_hits_np.shape[0] != 0:
                 print("Valid hits shape:", valid_hits_np.shape, filtered_hits.shape)
                 self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
-                sparse_points = self.pcd.farthest_point_down_sample(64)
-                omni.log.info(f"type: {type(sparse_points)}")
-                sparse_points = torch.tensor(np.asarray(sparse_points.points), dtype=torch.float32, device=self.device)
+
+                if len(self.pcd.points) == 0:
+                    omni.log.warning(f"[env {env_id}] No valid points found in the point cloud.")
+                    return None
+                elif len(self.pcd.points) < 64:
+                    # Use available points
+                    points_np = np.asarray(self.pcd.points)
+
+                    # Repeat points with small Gaussian noise to pad to 64
+                    num_missing = 64 - len(points_np)
+                    idxs = np.random.choice(len(points_np), num_missing, replace=True)
+                    noise = np.random.normal(loc=0.0, scale=1e-4, size=(num_missing, 3))  # tweak scale if needed
+                    padded_points = np.concatenate([points_np, points_np[idxs] + noise], axis=0)
+
+                    sparse_points = torch.tensor(padded_points, dtype=torch.float32, device=self.device)
+                else:
+                    sparse_pcd = self.pcd.farthest_point_down_sample(64)
+                    sparse_points = torch.tensor(np.asarray(sparse_pcd.points), dtype=torch.float32, device=self.device)
+
                 return sparse_points
+
                 #self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
                 # Only draw cylinder for vessel hits (if needed)
                 #self.draw_cylinder(center=needle_center, axis=axis, radius=0.05, height=0.25)
