@@ -26,10 +26,10 @@ from pxr import UsdGeom
 import isaacsim.core.utils.prims as prim_utils
 from isaacsim.core.cloner import GridCloner
 import isaacsim.core.utils.stage as stage_utils
-# try:
-#     from isaacsim.util.debug_draw import _debug_draw
-# except ImportError:
-#     from omni.isaac.debug_draw import _debug_draw
+try:
+    from isaacsim.util.debug_draw import _debug_draw
+except ImportError:
+    from omni.isaac.debug_draw import _debug_draw
 import isaaclab.sim as sim_utils
 from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -39,12 +39,13 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.assets import AssetBaseCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab.utils.math import sample_uniform, normalize, quat_mul, quat_mul,quat_inv,quat_apply,axis_angle_from_quat,quat_from_angle_axis
-
+from isaaclab.utils.math import sample_uniform, normalize, quat_mul, quat_mul,quat_inv,quat_apply,axis_angle_from_quat,quat_from_angle_axis, matrix_from_quat
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.sensors.ray_caster import RayCasterCamera, RayCasterCameraCfg, patterns
 from isaaclab.sensors.ray_caster import RayCasterCfg, patterns, RayCaster
 from isaaclab_assets import UR5_CFG
+from isaaclab.markers import VisualizationMarkers
+from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.io import dump_pickle, load_pickle
 from isaaclab.utils.warp import convert_to_warp_mesh, multi_raycast_mesh
 import warp as wp
@@ -115,10 +116,10 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
         mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
         update_period=0.1,
-        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0), convention="world"),
+        offset=RayCasterCameraCfg.OffsetCfg(pos=(-0.0012, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0), convention="world"),
         data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
         debug_vis=False,
-        max_distance=0.001,
+        max_distance=0.01,
         pattern_cfg=patterns.PinholeCameraPatternCfg(
             focal_length=24.0,
             horizontal_aperture=20.955,
@@ -271,8 +272,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._robot.set_joint_position_target(joint_pos)
         self._robot.write_data_to_sim()
         print(f"Robot Tool Tip Position: {self._robot.data.body_pos_w[:, self.tooltip_index]}")
-        #self.draw = _debug_draw.acquire_debug_draw_interface()
-
+        self.draw = _debug_draw.acquire_debug_draw_interface()
+        self.TUMOR_REACH_THRESHOLD = 0.002  # Threshold for considering the tumor reached
         self.DIST_THRESHOLD = 0.005
         # read pickled data
         omni.log.info("Loading tumor data...")
@@ -359,7 +360,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.stage = stage_utils.get_current_stage()
         self.env_ids = torch.arange(self.num_envs, device=self.device)
         self.set_tumor_positions()
-        #self.get_vessel_points()
+
+        # Markers
+        frame_marker_cfg = FRAME_MARKER_CFG.copy()
+        frame_marker_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
+        self.camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
         # Observation space terms:
         self.robot_root_pose = torch.zeros((self.num_envs, 7), dtype=torch.float32, device=self.device)  # (x, y, z, qw, qx, qy, qz)
         self.robot_root_vel = torch.zeros((self.num_envs, 6), dtype=torch.float32, device=self.device)  # (vx, vy, vz, wx, wy, wz)
@@ -375,6 +380,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.current_pos = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
         self.current_quat = torch.zeros((self.num_envs, 4), dtype=torch.float32, device=self.device)
         self.orientation_offset = torch.tensor([[1.0, 0.0, 0.0, 0.0]] * self.num_envs, dtype=torch.float32, device=self.device)
+        print("📌 BINDING OF _reset_idx:", self._reset_idx)
 
         self.pose_applied = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.trial_phase = ["preop"] * self.num_envs
@@ -564,105 +570,6 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         self._robot.set_joint_position_target(self.robot_dof_targets)
 
-
-    def apply_action(self):
-        env_ids = torch.arange(self.num_envs, device=self.device)
-        pose_ids = self.active_path_idx[env_ids]  # [B]
-
-        # Get environment offsets
-        offsets = self.scene.env_origins[env_ids]  # [B, 3]
-
-        # Gather base poses
-        base_pos = torch.stack([
-            self.start_positions[env_id][pose_ids[env_id]].to(self.device)
-            for env_id in env_ids
-        ])  # [B, 3]
-        base_quat = torch.stack([
-            self.start_quaternions[env_id][pose_ids[env_id]].to(self.device)
-            for env_id in env_ids
-        ])  # [B, 4]
-
-        # Apply delta from pre-physics
-        delta_pos = self.current_pos[env_ids]  # [B, 3]
-        tooltip_pos = base_pos + delta_pos + offsets  # final position [B, 3]
-        tooltip_quat = base_quat  # [B, 4]
-
-        # Debugging: Log the tooltip position and rotation if in debug mode
-        if self.debug_mode:
-            print(f"DEBUG: Applying action for {self.num_envs} environments.")
-            print(f"DEBUG: Tooltip position: {tooltip_pos}")
-            print(f"DEBUG: Tooltip quaternion: {tooltip_quat}")
-
-        # Compute holder poses
-        holder_quats, holder_positions = self.tooltip_to_holder(tooltip_quat, tooltip_pos)  # [B, 4], [B, 3]
-
-        # Apply only for those envs that haven't already had pose applied
-        mask = ~self.pose_applied[env_ids]  # [B]
-        selected_envs = env_ids[mask]
-
-        if selected_envs.numel() > 0:
-            root_state = torch.zeros((selected_envs.shape[0], 13), device=self.device)
-            root_state[:, :3] = holder_positions[mask]
-            root_state[:, 3:7] = holder_quats[mask]
-            root_state[:, 7:] = 0.0
-
-            # Debugging: Log applied pose if debug mode is enabled
-            if self.debug_mode:
-                print(f"DEBUG: Root state before sending to simulation: {root_state}")
-
-            self._robot.write_root_pose_to_sim(root_state[:, :7], env_ids=selected_envs)
-            self._robot.write_root_velocity_to_sim(root_state[:, 7:], env_ids=selected_envs)
-            self.pose_applied[selected_envs] = True
-
-        # === Insertion logic ===
-        slider_idx = self._robot.find_joints("holder_needle_slider")[0]
-        needle_step = 0.001
-
-        retracting = self.retracting[env_ids]
-        self.robot_dof_targets[env_ids[~retracting], slider_idx] -= needle_step
-        self.robot_dof_targets[env_ids[retracting], slider_idx] += 2 * needle_step
-
-        # Debugging: Log the robot's joint target positions if in debug mode
-        if self.debug_mode:
-            print(f"DEBUG: Robot joint targets: {self.robot_dof_targets}")
-
-        # === Phase switch ===
-        depths = self.robot_dof_targets[env_ids, slider_idx]
-        for i, env_id in enumerate(env_ids):
-            if depths[i] <= -0.09:
-                if self.trial_phase[env_id] == "preop":
-                    # Debugging: Log trial phase transition
-                    if self.debug_mode:
-                        print(f"DEBUG: Transitioning trial phase for env {env_id} to RL.")
-                    self.trial_phase[env_id] = "rl"
-                    self.pose_applied[env_id] = False
-                    self.robot_dof_targets[env_id, slider_idx] = 0.0
-                    self.retracting[env_id] = True
-                else:
-                    self.trial_done[env_id] = True
-                    # Debugging: Log trial completion for env
-                    if self.debug_mode:
-                        print(f"DEBUG: Trial done for env {env_id}.")
-            if self.retracting[env_id] and depths[i] >= 0.0:
-                self.retracting[env_id] = False
-
-        # Handle debug failure condition
-        if self.debug_force_fail:
-            if self.debug_mode:
-                print("DEBUG: Forcing failure in the current insertion attempt.")
-            # Force a failure behavior, e.g., reset or stop further actions.
-            self.trial_done[env_ids] = True
-
-        # Handle debug success condition
-        if self.debug_force_success:
-            if self.debug_mode:
-                print("DEBUG: Forcing success in the current insertion attempt.")
-            self.trial_done[env_ids] = True
-
-        self._robot.set_joint_position_target(self.robot_dof_targets)
-
-
-
     def _compute_intermediate_values(self, env_ids):
         """
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
@@ -699,6 +606,22 @@ class BiopsyDirectEnv(DirectRLEnv):
         holder_to_tooltip_quat, holder_to_tooltip_pos = tf_inverse(
             tooltip_to_holder_quat, tooltip_to_holder_pos
         )
+        batch_size = start_quat.shape[0]
+        closer_distance = 0.0025  # Distance to move the tooltip forward
+        # Define offset vector and expand for batch
+        tooltip_forward_offset = torch.tensor(
+            [0.0, -closer_distance, 0.0],
+            dtype=torch.float32, device=self.device
+        ).expand(batch_size, -1).unsqueeze(-1)  # shape: (B, 3, 1)
+
+        # Convert quaternion to rotation matrix
+        tooltip_rot_matrix = matrix_from_quat(start_quat)  # shape: (B, 3, 3)
+
+        # Compute world-space offset
+        world_offset = torch.bmm(tooltip_rot_matrix, tooltip_forward_offset).squeeze(-1)  # shape: (B, 3)
+
+        # Apply to start_pos
+        start_pos = start_pos + world_offset
 
         holder_quat, holder_pos = tf_combine(
             start_quat, start_pos, holder_to_tooltip_quat, holder_to_tooltip_pos
@@ -773,12 +696,22 @@ class BiopsyDirectEnv(DirectRLEnv):
             E) Set the robot joint velocities to zero
             F) Save the active path index per environment
         """
+        print(f"🚨 CUSTOM RESET IDX CALLED for envs: {env_ids}")
         super()._reset_idx(env_ids)
         omni.log.info(f"Env ID: {env_ids}, {type(env_ids)}")
         print(f"Resetting environments with IDs: {env_ids}")
-        self.pose_applied[env_ids] = False  # Reset pose application status
+        # Reset pose application status
+        self.pose_applied[env_ids] = False  
+        # Update eef tooltip joint position and rotation to zero
         slider_idx = self._robot.find_joints("holder_needle_slider")[0]
         self.robot_dof_targets[env_ids, slider_idx] = 0.0
+        # Brain Shift 
+        try:
+            print(f"Getting vessel points for envs: {env_ids}")
+            self.get_vessel_points()
+        except Exception as e:
+            print(f"Failed to get vessel points: {e}")
+            traceback.print_exc()
         #self._robot.set_joint_position_target(self.robot_dof_targets)
 
         # root_state = self._robot.data.default_root_state.clone()
@@ -807,22 +740,34 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._compute_intermediate_values(env_ids)
 
     def _get_dones(self):
+        """
+        Get the done flags for the environment. This includes:
+        - Number of trials exceeded the maximum number of trials
+        - Time out if the episode length exceeds the maximum episode length
+        - Tooltip reaches the tumor
+        """
+        # Done when tooltip reaches the tumor or maximum episode length is exceeded or number of trials exceeded
+        if self.distance_to_tumor() <= self.TUMOR_REACH_THRESHOLD:
+            print("Tooltip reached the tumor.")
+        else:
+            print("Tooltip did not reach the tumor yet, current distance:", self.distance_to_tumor())
+
         dummy_dones = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         time_out = self.episode_length_buf >= self.max_episode_length - 1
+        print(f"[DEBUG] episode_length_buf[:5]: {self.episode_length_buf[:5]}")
+        print(f"[DEBUG] max_episode_length: {self.max_episode_length}")
         return dummy_dones, time_out
 
     def _get_observations(self):
         """
         Get the observations for the environment. This includes:
-        a) Tooltip Pose
-        b) Joint Velocities
-        c) Depth to Tumor
-        d) Direction to Tumor Centroid
-        e) Downsampled PCD from RayCast Sensor
-        f) Preop Pose (start pose)
-        g) Try history and results
-        h) One-hot encoding of active path index
-        i) Estimated confidence (depth score, vessel hits, past success)
+        Tooltip Pose
+        Depth to Tumor
+        ~ Direction to Tumor Centroid
+        Downsampled PCD from RayCast Sensor
+        ~ Preop Pose (start pose)
+        ~ Try history and results
+        ~ One-hot encoding of active path index
         """
         # --- Core kinematics ---
         self.tool_tip_pos = self._robot.data.body_pos_w[:, self.tooltip_index]  # [B, 3]
@@ -1013,7 +958,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             )
 
             print(f"[env {env_id}] Hits inside cylinder Tumor: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-                
+            self.draw_points(filtered_hits, color=(1.0, 0.0, 1.0, 1.0), size=4.0) 
             if valid_hits_np.shape[0] != 0 and filtered_hits.shape[0] > 0:
                 print("Valid hits shape:", valid_hits_np.shape, filtered_hits.shape)
                 return filtered_hits  # Return filtered hits for further processing or visualization
@@ -1048,7 +993,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             )
 
             print(f"[env {env_id}] Hits inside cylinder Vessel: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-
+            self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
             # sparse_points_np = np.asarray(downsampled_pcd.points)
             # print(f"[env {env_id}] Sparse points shape: {sparse_points.shape}")
             if valid_hits_np.shape[0] != 0:
@@ -1074,8 +1019,6 @@ class BiopsyDirectEnv(DirectRLEnv):
                     sparse_points = torch.tensor(np.asarray(sparse_pcd.points), dtype=torch.float32, device=self.device)
 
                 return sparse_points
-
-                #self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
                 # Only draw cylinder for vessel hits (if needed)
                 #self.draw_cylinder(center=needle_center, axis=axis, radius=0.05, height=0.25)
 
@@ -1089,7 +1032,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         H, W = distances.shape[1:3]
         total_rays = H * W
 
-        max_dist = 0.1
+        max_dist = 0.005
         mean_dists = torch.zeros((num_envs,), dtype=torch.float32, device=self.device)
         for env_id in range(num_envs):
             dists = distances[env_id, :, :, 0]
@@ -1106,6 +1049,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         return mean_dists
 
     def distance_to_tumor(self, env_ids=None):
+        # camera marker
+        self.camera_marker.visualize(self.raycast_cam_tumor.data.pos_w, self.raycast_cam_tumor.data.quat_w_world)
         distances = self.raycast_cam_tumor.data.output["distance_to_camera"]
         if distances is None or distances.shape[0] == 0:
             print("[WARN] Raycast distances not yet populated.")
@@ -1123,7 +1068,11 @@ class BiopsyDirectEnv(DirectRLEnv):
             valid = (~torch.isinf(dists)) & (dists <= max_dist)
             num_valid = valid.sum().item()
             if num_valid > 0:
+                # mean distance
                 mean = dists[valid].mean()
+                # tip to first hit distance
+                first_hit = dists[valid].min()
+                print(f"[env {env_id}] First hit distance to tumor: {first_hit.item():.6f}")
                 mean_dists[env_id] = mean
                 print(f"[env {env_id}] Mean distance from tip to Tumor(valid hits): {mean.item():.6f}")
             else:
@@ -1215,7 +1164,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         return pos, quat
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
-        #self.draw.clear_points()
+        self.draw.clear_points()
         point_list = [tuple(p) for p in points_np]
         colors = [color] * len(point_list)
         sizes = [size] * len(point_list)
