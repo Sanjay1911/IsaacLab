@@ -646,14 +646,19 @@ class BiopsyDirectEnv(DirectRLEnv):
         a) RayCaster Camera reward based on distance to image plane and distance to camera
 
         """
-        total_reward = self.compute_reward(self.potentials, self.prev_potentials)
+        tip_to_tumor = self.distance_to_tumor()  # [B]
+        tip_to_vessel = self.distance_to_vessel()  # [B]
+        w_tumor_dist = self.cfg.w_tumor_dist
+        w_vessel_penalty = self.cfg.w_vessel_penalty
+        bonus_inside_tumor = self.cfg.bonus_inside_tumor
+        total_reward = self.compute_reward(tip_to_vessel, tip_to_tumor, self.potentials, self.prev_potentials, self.TUMOR_REACH_THRESHOLD, w_tumor_dist, w_vessel_penalty, bonus_inside_tumor)
         return total_reward
 
     def _get_states(self):  # TODO: States for Asymmetric RL
         pass
 
-    @torch.jit.script
-    def compute_reward(self, potentials, prev_potentials):  # TODO: actual Rewards
+    #@torch.jit.script
+    def compute_reward(self, tip_vessel, tip_tumor, potentials, prev_potentials, tumor_reach_threshold, w_tumor_dist, w_vessel_penalty, bonus_inside_tumor):  # TODO: actual Rewards
         """
         Reward structure:
         + reward for being closer to tumor
@@ -661,25 +666,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         - penalty for high real-time collision score
         + bonus for being inside tumor
         """
-
-        # === 1. Compute raycast-based distances ===
-        tip_to_tumor = self.distance_to_tumor()      # shape: (N,)
-        tip_to_vessel = self.distance_to_vessel()    # shape: (N,)
-
-        # === 2. Real-time collision score (e.g. from your scoring function or heuristics) ===
-
-        # === 3. Check if tip is inside tumor (binary mask for bonus) ===
-        inside_tumor = (tip_to_tumor <= self.TUMOR_REACH_THRESHOLD).float()
-
+        inside_tumor = (tip_tumor <= tumor_reach_threshold).float()
         progress_reward = potentials - prev_potentials  # shape: (N,)
-        # === 4. Reward weights ===
-
-        # === 5. Compute total reward ===
         reward = (
-            - (self.cfg.w_tumor_dist * tip_to_tumor)
-            - (self.cfg.w_vessel_penalty * tip_to_vessel)
+            - (w_tumor_dist * tip_tumor)
+            - (w_vessel_penalty * tip_vessel)
             #-(self.cfg.w_collision_score * current_collision_score)
-            + (self.cfg.bonus_inside_tumor * inside_tumor.float())
+            + (bonus_inside_tumor * inside_tumor.float())
             + progress_reward
         )
 
@@ -688,14 +681,11 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         return reward
     
-    @torch.jit.script
-    def compute_intermediate_values(
-        tool_tip_pos: torch.Tensor,
-        tumor_centroids: torch.Tensor,
-        prev_potentials: torch.Tensor,
-    ):
+    #@torch.jit.script
+    def compute_intermediate_values(self, tool_tip_pos: torch.Tensor, tumor_centroids: torch.Tensor, prev_potentials: torch.Tensor,):
         to_tumor_centroid = tumor_centroids - tool_tip_pos
         new_potentials = -torch.norm(to_tumor_centroid, dim=-1)
+        print(f"New potentials: {new_potentials}, Previous potentials: {prev_potentials}")
         return new_potentials, prev_potentials
 
     # ## --------------------------------------- ## #
