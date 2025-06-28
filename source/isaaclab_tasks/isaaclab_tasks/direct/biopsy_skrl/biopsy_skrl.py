@@ -46,7 +46,7 @@ class PointNetExtractor(nn.Module):
         return x
 
 
-class ContinuosActionPolicy(GaussianMixin, Model):
+class ContinouosActionPolicy(GaussianMixin, Model):
     def __init__(self, observation_space, action_space, device,
                  clip_actions=False, clip_log_std=True, min_log_std=-20, max_log_std=2):
         Model.__init__(self, observation_space, action_space, device)
@@ -105,7 +105,23 @@ class ContinuosActionPolicy(GaussianMixin, Model):
             print("Concatenated features shape:", x.shape)
 
         x = self.actor(x)
-        return self.mean_layer(x), self.log_std_parameter, {}
+        # raw_mean = self.mean_layer(x)
+        # mean = torch.tanh(raw_mean)  # ensure action is in [-1, 1]
+        # print("Policy raw output before tanh:", raw_mean)
+        # print("Policy mean (after tanh):", mean)
+        # return mean, self.log_std_parameter, {}
+        raw_mean = self.mean_layer(x)
+        mean = torch.tanh(raw_mean)
+        noise = torch.randn_like(raw_mean)
+        std = torch.exp(self.log_std_parameter)
+        sampled_action = raw_mean + std * noise
+        squashed_action = torch.tanh(sampled_action)  # squashing the action to be in [-1, 1] https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html , https://www.reddit.com/r/reinforcementlearning/comments/1hwau8q/clipping_vs_squashed_tanh_for_rescaling_actions/- Why should I normalize actions?
+        if DEBUG:
+            print("Policy raw output before tanh:", raw_mean)
+            #print("Policy mean (after tanh):", mean)
+            print("Policy sampled action (before squashing):", sampled_action)
+            print("Policy squashed action (after tanh):", squashed_action)
+        return mean, self.log_std_parameter, {}
 
 
 # define the model
@@ -213,7 +229,7 @@ if isinstance(env.action_space, spaces.Discrete):
     models["policy"] = DiscreteActionPolicy(env.observation_space, env.action_space, device)
 elif isinstance(env.action_space, spaces.Box):
     print("Using GaussianMixin for Continuous action space")
-    models["policy"] = ContinuosActionPolicy(env.observation_space, env.action_space, device)
+    models["policy"] = ContinouosActionPolicy(env.observation_space, env.action_space, device, clip_actions=False)
 
 models["value"] = ValueModel(env.observation_space, env.action_space, device)  # separate value model
 if DEBUG:
