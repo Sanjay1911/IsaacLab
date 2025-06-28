@@ -409,7 +409,19 @@ class BiopsyDirectEnv(DirectRLEnv):
         - orientation remains fixed to preop base orientation
         """
         self.actions = actions.clone()  # Store the actions for later use
+        low = torch.tensor(self.single_action_space.low, device=self.device)
+        high = torch.tensor(self.single_action_space.high, device=self.device)
         print(f"Picked actions: {self.actions}")
+        # Scale action values to the range of the action space from [-1, 1] to [low, high] using the formula:
+        # scaled_action = ((x-a)/(b-a)) * (d-c) + c where x belongs to [a, b] and scaled_action belongs to [c, d]
+        # Here, a = -1, b = 1, c = low, d = high
+        a,b = -1, 1  # Action space range
+        # This scales the actions to the range [low, high]
+        self.actions = (((self.actions - a)/(b - a))*(high-low))+low  # Normalize actions to [-1, 1]
+        self.new_actions = 0.5 * (self.actions + 1.0) * (high - low) + low
+        #self.actions = torch.clamp(self.actions, low, high)
+        print(f"Scaled actions: {self.actions}, {self.new_actions}")
+
         # actions = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
 
         # max_translation = self.cfg.action_scale
@@ -424,16 +436,65 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         if isinstance(self.single_action_space, gym.spaces.Box):
             print(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
-            self.delta_pos = self.cfg.action_scale * self.actions[:, :3]
-            print(f"Current pos: {self.current_pos}")
+            tooltip_pos = self._robot.data.body_pos_w[self.env_ids, self.tooltip_index]  # (B, 3)
+            tooltip_quat = self._robot.data.body_quat_w[self.env_ids, self.tooltip_index]  # (B, 4)
+            print(f"Current tooltip position: {tooltip_pos}, current quaternion: {tooltip_quat}")
+            delta_pos = self.actions[:, :2] # (B, 2)
+            new_pos = tooltip_pos.clone()
+            new_pos[:, 0] += delta_pos[:, 0]  # Update x
+            new_pos[:, 2] += delta_pos[:, 1]  # Update y
+            print(f"New pos: {new_pos}")
+
+            new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(tooltip_quat, new_pos, preserve_orientation=True)
             root_state = self._robot.data.default_root_state.clone()
-            print(f"Root state before applying pose: {root_state[self.env_ids, :]}")
-            current_pose = root_state[self.env_ids, :7].clone()  # (B, 7) -> (x, y, z, qw, qx, qy, qz)
-            print(f"Current pose before applying delta: {current_pose}")
-            # Apply delta position to the current pose
-            current_pose[:, :3] += self.delta_pos.to(dtype=torch.float32) + offsets
-            print(f"Current pose after applying delta: {current_pose}")
-            
+            root_state[self.env_ids, :3] = new_holder_pos + offsets[self.env_ids]
+            root_state[self.env_ids, 3:7] = new_holder_quat
+            root_state[self.env_ids, 7:] = 0.0
+            self.pose_applied[self.env_ids] = True  # Lock pose application
+            try:
+                self._robot.write_root_pose_to_sim(root_state[self.env_ids, :7], env_ids=self.env_ids)
+                self._robot.write_root_velocity_to_sim(root_state[self.env_ids, 7:], env_ids=self.env_ids)
+                print(f"Applied new pose to envs: {self.env_ids}, pos: {new_holder_pos}, quat: {new_holder_quat}")
+            except Exception as e:
+                print(f"Pose application failed due to: {e}")
+                traceback.print_exc()
+            # for i, env_id in enumerate(self.env_ids):
+            #     if not self.pose_applied[env_id]:  # 🔒 Guard
+            #         print(f"[env {env_id}] Applying action for env {env_id}")
+            #         tooltip_pos = self._robot.data.body_pos_w[env_id, self.tooltip_index]
+            #         tooltip_quat = self._robot.data.body_quat_w[env_id, self.tooltip_index]
+            #         delta_pos = self.actions[env_id, :2]
+            #         print(f"[env {env_id}] Tooltip pos: {tooltip_pos}, quat: {tooltip_quat}, delta_pos: {delta_pos}")
+            #         new_pos = tooltip_pos.clone()
+            #         new_pos[0] += delta_pos[0]
+            #         new_pos[2] += delta_pos[1]
+            #         print(f"[env {env_id}] New pos: {new_pos}")
+            #         tooltip_quat = tooltip_quat.unsqueeze(0) if tooltip_quat.ndim == 1 else tooltip_quat
+            #         new_pos = new_pos.unsqueeze(0) if new_pos.ndim == 1 else new_pos
+            #         tooltip_quat = tooltip_quat.unsqueeze(0) if tooltip_quat.ndim == 1 else tooltip_quat
+            #         new_pos = new_pos.unsqueeze(0) if new_pos.ndim == 1 else new_pos
+
+            #         new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(
+            #             tooltip_quat, new_pos, preserve_orientation=True
+            #         )
+
+            #         new_holder_quat = new_holder_quat.squeeze(0)
+            #         new_holder_pos = new_holder_pos.squeeze(0)
+
+            #         offset = self.scene.env_origins[env_id]
+            #         root_state = self._robot.data.default_root_state.clone()
+            #         root_state[env_id, :3] = new_holder_pos + offset
+            #         root_state[env_id, 3:7] = new_holder_quat
+            #         root_state[env_id, 7:] = 0.0
+
+            #         try:
+            #             self._robot.write_root_pose_to_sim(root_state[env_id, :7].unsqueeze(0), env_ids=torch.tensor([env_id], device=self.device))
+            #             self._robot.write_root_velocity_to_sim(root_state[env_id, 7:].unsqueeze(0), env_ids=torch.tensor([env_id], device=self.device))
+            #             self.pose_applied[env_id] = True  # ✅ Lock motion after one move
+            #             print(f"[env {env_id}] Pose applied.")
+            #         except Exception as e:
+            #             print(f"[env {env_id}] Pose application failed: {e}")
+
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
             for i in range(self.num_envs):
                 env_id = self.env_ids[i]
