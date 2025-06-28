@@ -497,7 +497,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
             if self.retracting[env_id] and depths[i] >= 0.0:
                 self.retracting[env_id] = False
-
+        print("Phase switching and insertion logic applied.")
         self._robot.set_joint_position_target(self.robot_dof_targets)
 
     def _compute_intermediate_values(self, env_ids):
@@ -510,8 +510,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         
         self.tool_tip_pos = self._robot.data.body_pos_w[env_ids, self.tooltip_index]
         self.tool_tip_quat = self._robot.data.body_quat_w[env_ids, self.tooltip_index]
-        self.potentials, self.prev_potentials = self.compute_intermediate_values(self.potentials, self.shuffled_tumor_centroids, self.prev_potentials)
-    
+        #self.potentials, self.prev_potentials = self.compute_intermediate_values(env_ids, self.tool_tip_pos, self.shuffled_tumor_centroids, self.prev_potentials)
+        self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(env_ids, self.tool_tip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
+
     def _reset_idx(self, env_ids):
         """
             A) Randomly select a tumor centroid from the list of centroids
@@ -521,45 +522,65 @@ class BiopsyDirectEnv(DirectRLEnv):
             E) Set the robot joint velocities to zero
             F) Save the active path index per environment
         """
-        print(f"🚨 CUSTOM RESET IDX CALLED for envs: {env_ids}")
-        super()._reset_idx(env_ids)
-        omni.log.info(f"Env ID: {env_ids}, {type(env_ids)}")
-        print(f"Resetting environments with IDs: {env_ids}")
-        # Reset pose application status
-        self.pose_applied[env_ids] = False  
-        # Update eef tooltip joint position and rotation to zero
-        slider_idx = self._robot.find_joints("holder_needle_slider")[0]
-        self.robot_dof_targets[env_ids, slider_idx] = 0.0
-        # Brain Shift 
-        try:
-            print(f"Getting vessel points for envs: {env_ids}")
-            self.get_vessel_points()
-        except Exception as e:
-            print(f"Failed to get vessel points: {e}")
-            traceback.print_exc()
-        #self._robot.set_joint_position_target(self.robot_dof_targets)
+        print(f"CUSTOM RESET IDX CALLED for envs: {env_ids}")
+        env_ids = torch.tensor(env_ids, device=self.device)  # ensure tensor
 
-        # root_state = self._robot.data.default_root_state.clone()
-        # for env_id in env_ids:
-        #     print("Resetting environments with IDs:", env_id)
-        #     env_id = int(env_id)
-        #     offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
-        #     self.trial_phase[env_id] = "preop"
-        #     self.trial_done[env_id] = False
-        #     self.pose_applied[env_id] = False
-        #     tumor_data = self.tumor_pickle[env_id]
-        #     path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
-        #     start_pose = tumor_data["start_pose"][path_idx]
-        #     start_pos = start_pose["position"].to(self.device) + offset
-        #     start_quat = start_pose["quaternion"].to(self.device)
-        #     ttip_quat, ttip_pos = self.tooltip_to_holder(start_quat, start_pos)
-        #     root_state[env_id, :3] = ttip_pos
-        #     root_state[env_id, 3:7] = ttip_quat
-        #     root_state[env_id, 7:] = 0.0 
-        #     self.active_path_idx[env_id] = path_idx
-        #     print(f"[env {env_id}] Using path index {path_idx} for tumor at {tumor_data['tumor_position']}")
-        # self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
-        # self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
+        if (env_ids >= self.num_envs).any():
+            print(f"Invalid env ID detected: {env_ids}")
+            env_ids = env_ids[env_ids < self.num_envs]  # clip if needed
+
+        super()._reset_idx(env_ids)
+        if isinstance(self.single_action_space, gym.spaces.Discrete):
+            omni.log.info(f"Env ID: {env_ids}, {type(env_ids)}")
+            print(f"Resetting environments with IDs: {env_ids}")
+            # Reset pose application status
+            self.pose_applied[env_ids] = False  
+            # Update eef tooltip joint position and rotation to zero
+            slider_idx = self._robot.find_joints("holder_needle_slider")[0]
+            self.robot_dof_targets[env_ids, slider_idx] = 0.0
+            # Brain Shift 
+            try:
+                print(f"Getting vessel points for envs: {env_ids}")
+                self.get_vessel_points()
+            except Exception as e:
+                print(f"Failed to get vessel points: {e}")
+                traceback.print_exc()
+        #self._robot.set_joint_position_target(self.robot_dof_targets)
+        elif isinstance(self.single_action_space, gym.spaces.Box):
+            print(f"Resetting environments with IDs: {env_ids}")
+            # Reset pose application status
+            self.pose_applied[env_ids] = False  
+            # Update eef tooltip joint position and rotation to zero
+            slider_idx = self._robot.find_joints("holder_needle_slider")[0]
+            self.robot_dof_targets[env_ids, slider_idx] = 0.0
+            # # Brain Shift 
+            # try:
+            #     print(f"Getting vessel points for envs: {env_ids}")
+            #     self.get_vessel_points()
+            # except Exception as e:
+            #     print(f"Failed to get vessel points: {e}")
+            #     traceback.print_exc()
+            root_state = self._robot.data.default_root_state.clone()
+            for env_id in env_ids:
+                print("Resetting environments with IDs:", env_id)
+                env_id = int(env_id)
+                offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
+                self.trial_phase[env_id] = "preop"
+                self.trial_done[env_id] = False
+                self.pose_applied[env_id] = False
+                tumor_data = self.tumor_pickle[env_id]
+                path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
+                start_pose = tumor_data["start_pose"][path_idx]
+                start_pos = start_pose["position"].to(self.device) + offset
+                start_quat = start_pose["quaternion"].to(self.device)
+                ttip_quat, ttip_pos = self.tooltip_to_holder(start_quat, start_pos)
+                root_state[env_id, :3] = ttip_pos
+                root_state[env_id, 3:7] = ttip_quat
+                root_state[env_id, 7:] = 0.0 
+                self.active_path_idx[env_id] = path_idx
+                print(f"[env {env_id}] Using path index {path_idx} for tumor at {tumor_data['tumor_position']}")
+            self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
+            self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
         
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         self._compute_intermediate_values(env_ids)
