@@ -26,10 +26,10 @@ from pxr import UsdGeom
 import isaacsim.core.utils.prims as prim_utils
 from isaacsim.core.cloner import GridCloner
 import isaacsim.core.utils.stage as stage_utils
-try:
-    from isaacsim.util.debug_draw import _debug_draw
-except ImportError:
-    from omni.isaac.debug_draw import _debug_draw
+# try:
+#     from isaacsim.util.debug_draw import _debug_draw
+# except ImportError:
+#     from omni.isaac.debug_draw import _debug_draw
 import isaaclab.sim as sim_utils
 from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
 from isaaclab.assets import Articulation, ArticulationCfg
@@ -271,7 +271,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._robot.set_joint_position_target(joint_pos)
         self._robot.write_data_to_sim()
         print(f"Robot Tool Tip Position: {self._robot.data.body_pos_w[:, self.tooltip_index]}")
-        self.draw = _debug_draw.acquire_debug_draw_interface()
+        #self.draw = _debug_draw.acquire_debug_draw_interface()
         self.TUMOR_REACH_THRESHOLD = 0.0075  # Threshold for considering the tumor reached
         self.DIST_THRESHOLD = 0.005
         # read pickled data
@@ -876,7 +876,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             )
 
             print(f"[env {env_id}] Hits inside cylinder Vessel: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-            self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
+            #self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
             # sparse_points_np = np.asarray(downsampled_pcd.points)
             # print(f"[env {env_id}] Sparse points shape: {sparse_points.shape}")
             if valid_hits_np.shape[0] != 0:
