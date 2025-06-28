@@ -372,8 +372,11 @@ class RayCasterCamera(RayCaster):
             )
         final_hits = hits_flat.view(num_batch, self.num_rays, 3)
         final_depth = distances_flat.view(num_batch, self.num_rays)
+        assert final_hits.shape[0] == len(env_ids), (
+            f"[BUG] final_hits.shape[0] ({final_hits.shape[0]}) != len(env_ids) ({len(env_ids)})"
+        )
+        self.ray_hits_w[env_ids] = final_hits
 
-        self.ray_hits_w[env_ids] = final_hits[env_ids]
 
         # process and store camera-specific outputs.
         if "distance_to_image_plane" in self.cfg.data_types:
