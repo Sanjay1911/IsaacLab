@@ -642,7 +642,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         # --- One-hot encoding for active path index ---
         #path_one_hot = torch.nn.functional.one_hot(self.active_path_idx, num_classes=3).float()  # [B, 3]
 
-        obs = {"tooltip_position": self.tool_tip_pos, "tooltip_quaternion": self.tool_tip_quat, "raycaster": pcd_vessels, "depth_tumor": depth_to_tumor}  # "trial": try_history, 
+        obs = {"tooltip_position": self.tool_tip_pos, "tooltip_quaternion": self.tooltip_rot, "raycaster": pcd_vessels, "depth_tumor": depth_to_tumor}  # "trial": try_history, 
         for k, v in obs.items():
             print(f"{k}: {v.shape}")
 
