@@ -699,6 +699,58 @@ class BiopsyDirectEnv(DirectRLEnv):
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
     # ## --------------------------------------- ## #
+    def tooltip_to_holder_preserve(self, start_quat, start_pos, preserve_orientation: bool = False):
+        is_batched = len(start_quat.shape) == 2
+
+        if not is_batched:
+            start_quat = start_quat.unsqueeze(0)
+            start_pos = start_pos.unsqueeze(0)
+
+        start_quat = start_quat.to(dtype=torch.float32)
+        start_pos = start_pos.to(dtype=torch.float32)
+        batch_size = start_quat.shape[0]
+
+        # Offset from tooltip to holder
+        tooltip_to_holder_pos = torch.tensor(
+            [0.02464, -0.00005, -0.0265], dtype=torch.float32, device=self.device
+        ).expand(batch_size, -1)
+
+        # Rotation between tooltip and holder
+        if preserve_orientation:
+            tooltip_to_holder_quat = torch.tensor(
+                [1.0, 0.0, 0.0, 0.0],  # Identity quaternion — no rotation
+                dtype=torch.float32, device=self.device
+            ).expand(batch_size, -1)
+        else:
+            tooltip_to_holder_quat = torch.tensor(
+                R.from_euler("xyz", [0, 0, 1.5707]).as_quat(canonical=False),
+                dtype=torch.float32, device=self.device
+            ).expand(batch_size, -1)
+
+        # Invert tooltip→holder to get holder→tooltip
+        holder_to_tooltip_quat, holder_to_tooltip_pos = tf_inverse(
+            tooltip_to_holder_quat, tooltip_to_holder_pos
+        )
+
+        # Move tooltip slightly forward if needed
+        closer_distance = 0.0025
+        tooltip_forward_offset = torch.tensor(
+            [0.0, -closer_distance, 0.0], dtype=torch.float32, device=self.device
+        ).expand(batch_size, -1).unsqueeze(-1)
+
+        tooltip_rot_matrix = matrix_from_quat(start_quat)
+        world_offset = torch.bmm(tooltip_rot_matrix, tooltip_forward_offset).squeeze(-1)
+        start_pos = start_pos + world_offset
+
+        # Combine to get final holder transform
+        holder_quat, holder_pos = tf_combine(
+            start_quat, start_pos, holder_to_tooltip_quat, holder_to_tooltip_pos
+        )
+
+        if not is_batched:
+            return holder_quat.squeeze(0), holder_pos.squeeze(0)
+        return holder_quat, holder_pos
+
 
     def tooltip_to_holder(self, start_quat, start_pos):
         is_batched = len(start_quat.shape) == 2
