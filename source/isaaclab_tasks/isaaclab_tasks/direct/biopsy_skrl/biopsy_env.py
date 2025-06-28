@@ -273,7 +273,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._robot.write_data_to_sim()
         print(f"Robot Tool Tip Position: {self._robot.data.body_pos_w[:, self.tooltip_index]}")
         self.draw = _debug_draw.acquire_debug_draw_interface()
-        self.TUMOR_REACH_THRESHOLD = 0.002  # Threshold for considering the tumor reached
+        self.TUMOR_REACH_THRESHOLD = 0.0075  # Threshold for considering the tumor reached
         self.DIST_THRESHOLD = 0.005
         # read pickled data
         omni.log.info("Loading tumor data...")
@@ -378,6 +378,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.trial_counts = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)
 
         self.current_pos = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
+        self.delta_pos = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
         self.current_quat = torch.zeros((self.num_envs, 4), dtype=torch.float32, device=self.device)
         self.orientation_offset = torch.tensor([[1.0, 0.0, 0.0, 0.0]] * self.num_envs, dtype=torch.float32, device=self.device)
         print("📌 BINDING OF _reset_idx:", self._reset_idx)
@@ -420,9 +421,17 @@ class BiopsyDirectEnv(DirectRLEnv):
         offsets = self.scene.env_origins[self.env_ids]
 
         if isinstance(self.single_action_space, gym.spaces.Box):
-            omni.log.info(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
-            self.current_pos = self.cfg.action_scale * self.actions[:, :3]
-
+            print(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
+            self.delta_pos = self.cfg.action_scale * self.actions[:, :3]
+            print(f"Current pos: {self.current_pos}")
+            root_state = self._robot.data.default_root_state.clone()
+            print(f"Root state before applying pose: {root_state[self.env_ids, :]}")
+            current_pose = root_state[self.env_ids, :7].clone()  # (B, 7) -> (x, y, z, qw, qx, qy, qz)
+            print(f"Current pose before applying delta: {current_pose}")
+            # Apply delta position to the current pose
+            current_pose[:, :3] += self.delta_pos.to(dtype=torch.float32) + offsets
+            print(f"Current pose after applying delta: {current_pose}")
+            
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
             for i in range(self.num_envs):
                 env_id = self.env_ids[i]
@@ -747,16 +756,15 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Tooltip reaches the tumor
         """
         # Done when tooltip reaches the tumor or maximum episode length is exceeded or number of trials exceeded
-        if self.distance_to_tumor() <= self.TUMOR_REACH_THRESHOLD:
-            print("Tooltip reached the tumor.")
-        else:
-            print("Tooltip did not reach the tumor yet, current distance:", self.distance_to_tumor())
-
-        dummy_dones = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        distances = self.distance_to_tumor()
+        tumor_reached = distances <= self.TUMOR_REACH_THRESHOLD
+        for i in range(min(5, self.num_envs)):
+            print(f"[env {i}] distance: {distances[i].item():.4f} | reached: {tumor_reached[i].item()}")
+        #dummy_dones = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         print(f"[DEBUG] episode_length_buf[:5]: {self.episode_length_buf[:5]}")
         print(f"[DEBUG] max_episode_length: {self.max_episode_length}")
-        return dummy_dones, time_out
+        return tumor_reached, time_out
 
     def _get_observations(self):
         """
@@ -958,7 +966,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             )
 
             print(f"[env {env_id}] Hits inside cylinder Tumor: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-            self.draw_points(filtered_hits, color=(1.0, 0.0, 1.0, 1.0), size=4.0) 
+            #self.draw_points(filtered_hits, color=(1.0, 0.0, 1.0, 1.0), size=4.0) 
             if valid_hits_np.shape[0] != 0 and filtered_hits.shape[0] > 0:
                 print("Valid hits shape:", valid_hits_np.shape, filtered_hits.shape)
                 return filtered_hits  # Return filtered hits for further processing or visualization
@@ -1050,7 +1058,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
     def distance_to_tumor(self, env_ids=None):
         # camera marker
-        self.camera_marker.visualize(self.raycast_cam_tumor.data.pos_w, self.raycast_cam_tumor.data.quat_w_world)
+        #self.camera_marker.visualize(self.raycast_cam_tumor.data.pos_w, self.raycast_cam_tumor.data.quat_w_world)
         distances = self.raycast_cam_tumor.data.output["distance_to_camera"]
         if distances is None or distances.shape[0] == 0:
             print("[WARN] Raycast distances not yet populated.")

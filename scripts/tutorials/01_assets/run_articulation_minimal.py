@@ -101,14 +101,6 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
-    skull = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Skull",
-        spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
-    )
-
     # vessel = AssetBaseCfg(
     #     prim_path="{ENV_REGEX_NS}/Vessel",
     #     spawn=sim_utils.MeshFileCfg(
@@ -117,10 +109,18 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     #     init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     # )
 
+    skull = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Skull",
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    )
+
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
+            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -128,7 +128,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo/src/curobo/content/assets/scene/tumr.obj"
+            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -1004,7 +1004,7 @@ def main():
 
         if valid_hits_np.shape[0] != 0:
             print("Valid hits shape:", valid_hits_np.shape)
-            save_point_cloud_ply("/home/sanjay/thesis_replications/forked/IsaacLab/custom/env0_pcd_1706.ply", filtered_hits)
+            #save_point_cloud_ply("/home/sanjay/thesis_replications/forked/IsaacLab/custom/env0_pcd_1706.ply", filtered_hits)
         # with open(os.path.join(output_dir, "depth_info.csv"), "a") as f:
         #     f.write(f"{count},{mean_distance.item()},{center_distance.item()},{num_valid/total_rays},{100.0 * num_valid / total_rays:.2f}%\n")
         #print("-------------------------------")

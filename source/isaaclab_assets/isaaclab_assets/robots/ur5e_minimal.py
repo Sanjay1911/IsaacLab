@@ -20,7 +20,7 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 UR5_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"/home/sanjay/thesis_replications/forked/minimal_needle.usd",
+        usd_path=f"/home/czlocal/sanjay_isaac/forked/minimal_needle.usd",
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             max_depenetration_velocity=5.0,

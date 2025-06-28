@@ -15,7 +15,7 @@ from skrl.utils.spaces.torch import unflatten_tensorized_space  # https://skrl.r
 from gymnasium import spaces
 # seed for reproducibility
 set_seed(42)  # e.g. `set_seed(42)` for fixed seed
-DEBUG = False  # Set to True to enable debug prints
+DEBUG = True  # Set to True to enable debug prints
 
 class PointNetExtractor(nn.Module):
     def __init__(self, point_channel=3, output_dim=256):
@@ -186,7 +186,7 @@ class ValueModel(DeterministicMixin, Model):
 
 
 # load and wrap the Isaac Lab environment
-env = load_isaaclab_env(task_name="Isaac-Biopsy-Direct-Dict-Discrete-v0")
+env = load_isaaclab_env(task_name="Isaac-Biopsy-Direct-Dict-Box-v0") #change here for different action space
 env = wrap_env(env)
 
 device = env.device

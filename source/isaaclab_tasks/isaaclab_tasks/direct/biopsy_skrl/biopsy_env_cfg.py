@@ -56,7 +56,7 @@ class DictBoxEnvCfg(BiopsyDirectEnvCfg):
         # History of Previous Poses and their depth values
     })
     # or for simplicity: {"joint-velocities": 2, "camera": [height, width, 3]}
-    action_space = spaces.Box(low=-1.0, high=1.0, shape=(6,))
+    action_space = spaces.Box(low=-0.0005, high=0.0005, shape=(2,))
 
 ### 
 # Observation space as Dict & Action space as Discrete

@@ -366,6 +366,7 @@ class DirectRLEnv(gym.Env):
 
         # -- reset envs that terminated/timed-out and log the episode information
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        print(f"[DEBUG] step: {self.common_step_counter}, reset_buf sum: {self.reset_buf.sum().item()}")
         if len(reset_env_ids) > 0:
             self._reset_idx(reset_env_ids)
             # update articulation kinematics
