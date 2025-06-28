@@ -188,7 +188,7 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     w_vessel_penalty = 3.0
     w_collision_score = 1.5
     bonus_inside_tumor = 10.0
-    pass
+
 
 
 class BiopsyDirectEnv(DirectRLEnv):
@@ -236,7 +236,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         #self.preop = biopsy_preop.BiopsyPreop()
         #self.preop.print_test()
         self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
-
         stage = get_current_stage()
         prim = stage.GetPrimAtPath("/World/envs/env_0/Robot/needle_tool/holder_link")
         omni.log.info(f"Prim: {prim}")
@@ -365,6 +364,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
         frame_marker_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
         self.camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
+
         # Observation space terms:
         self.robot_root_pose = torch.zeros((self.num_envs, 7), dtype=torch.float32, device=self.device)  # (x, y, z, qw, qx, qy, qz)
         self.robot_root_vel = torch.zeros((self.num_envs, 6), dtype=torch.float32, device=self.device)  # (vx, vy, vz, wx, wy, wz)
@@ -387,7 +387,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.trial_phase = ["preop"] * self.num_envs
         self.trial_done = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
-
+        # Rewards
+        self.potentials = torch.zeros(self.num_envs, dtype=torch.float32, device=self.sim.device)
+        self.prev_potentials = torch.zeros_like(self.potentials)
 
     def _setup_scene(self):
         """
@@ -498,87 +500,6 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         self._robot.set_joint_position_target(self.robot_dof_targets)
 
-    def __apply_action(self):
-        omni.log.info(f"Applying action for {self.num_envs} environments.")
-        omni.log.info(f"Type of single action space: {type(self.single_action_space)}")
-        offsets = self.scene.env_origins[self.env_ids]
-        if isinstance(self.single_action_space, gym.spaces.Box):
-            omni.log.info(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
-            self.current_pos = self.cfg.action_scale * self.actions[:, :3]
-        # === Apply action for Discrete control ===
-        elif isinstance(self.single_action_space, gym.spaces.Discrete):
-            for i in range(self.num_envs):
-                action_index = self.actions[i, 0].item()
-                print(f"Env {i} - Chosen action index: {action_index}")
-
-                pose = self.start_poses[i, action_index]
-                print(f"Env {i} - Chosen pose: {pose}")
-
-                quat, pos = self.tooltip_to_holder(pose[3:], pose[:3])
-                print(f"Env {i} - Tooltip pos: {pos}, quat: {quat}")
-                self.pos_tensor[i] = pos
-                self.quat_tensor[i] = quat
-            current_root_state = self._robot.data.default_root_state.clone()
-            current_root_state[:, :3] = self.pos_tensor + offsets
-            current_root_state[:, 3:7] = self.quat_tensor
-            current_root_state[:, 7:] = 0.0  # Set velocity to zero
-
-            try:
-                self._robot.write_root_pose_to_sim(current_root_state[:, :7])
-                self._robot.write_root_velocity_to_sim(current_root_state[:, 7:])
-                print(f"Env {i}: write_root_pose_to_sim successful")
-            except Exception as e:
-                print(f"Env {i}: write_root_pose_to_sim failed due to: {e}")
-                traceback.print_exc()
-        elif isinstance(self.single_action_space, Dict):
-            pass
-        # === Insertion logic ===
-        slider_idx = self._robot.find_joints("holder_needle_slider")[0]
-        needle_step = 0.0002
-
-        retracting = self.retracting[self.env_ids]
-        self.robot_dof_targets[self.env_ids[~retracting], slider_idx] -= needle_step
-        self.robot_dof_targets[self.env_ids[retracting], slider_idx] += 2 * needle_step
-
-        # Debugging: Log the robot's joint target positions if in debug mode
-        if self.debug_mode:
-            print(f"DEBUG: Robot joint targets: {self.robot_dof_targets}")
-
-        # === Phase switch ===
-        depths = self.robot_dof_targets[self.env_ids, slider_idx]
-        for i, env_id in enumerate(self.env_ids):
-            if depths[i] <= -0.09:
-                if self.trial_phase[env_id] == "preop":
-                    # Debugging: Log trial phase transition
-                    if self.debug_mode:
-                        print(f"DEBUG: Transitioning trial phase for env {env_id} to RL.")
-                    self.trial_phase[env_id] = "rl"
-                    self.pose_applied[env_id] = False
-                    self.robot_dof_targets[env_id, slider_idx] = 0.0
-                    self.retracting[env_id] = True
-                else:
-                    self.trial_done[env_id] = True
-                    # Debugging: Log trial completion for env
-                    if self.debug_mode:
-                        print(f"DEBUG: Trial done for env {env_id}.")
-            if self.retracting[env_id] and depths[i] >= 0.0:
-                self.retracting[env_id] = False
-
-        # Handle debug failure condition
-        if self.debug_force_fail:
-            if self.debug_mode:
-                print("DEBUG: Forcing failure in the current insertion attempt.")
-            # Force a failure behavior, e.g., reset or stop further actions.
-            self.trial_done[self.env_ids] = True
-
-        # Handle debug success condition
-        if self.debug_force_success:
-            if self.debug_mode:
-                print("DEBUG: Forcing success in the current insertion attempt.")
-            self.trial_done[self.env_ids] = True
-
-        self._robot.set_joint_position_target(self.robot_dof_targets)
-
     def _compute_intermediate_values(self, env_ids):
         """
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
@@ -589,113 +510,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         
         self.tool_tip_pos = self._robot.data.body_pos_w[env_ids, self.tooltip_index]
         self.tool_tip_quat = self._robot.data.body_quat_w[env_ids, self.tooltip_index]
-
+        self.potentials, self.prev_potentials = self.compute_intermediate_values(self.potentials, self.shuffled_tumor_centroids, self.prev_potentials)
     
-    def tooltip_to_holder(self, start_quat, start_pos):
-        is_batched = len(start_quat.shape) == 2
-
-        if not is_batched:
-            start_quat = start_quat.unsqueeze(0)
-            start_pos = start_pos.unsqueeze(0)
-
-        start_quat = start_quat.to(dtype=torch.float32)
-        start_pos = start_pos.to(dtype=torch.float32)
-
-        batch_size = start_quat.shape[0]
-
-        tooltip_to_holder_pos = torch.tensor(
-            [0.02464, -0.00005, -0.0265], dtype=torch.float32, device=self.device
-        ).expand(batch_size, -1)
-
-        tooltip_to_holder_quat = torch.tensor(
-            R.from_euler("xyz", [0, 0, 1.5707]).as_quat(canonical=False),
-            dtype=torch.float32, device=self.device
-        ).expand(batch_size, -1)
-
-        holder_to_tooltip_quat, holder_to_tooltip_pos = tf_inverse(
-            tooltip_to_holder_quat, tooltip_to_holder_pos
-        )
-        batch_size = start_quat.shape[0]
-        closer_distance = 0.0025  # Distance to move the tooltip forward
-        # Define offset vector and expand for batch
-        tooltip_forward_offset = torch.tensor(
-            [0.0, -closer_distance, 0.0],
-            dtype=torch.float32, device=self.device
-        ).expand(batch_size, -1).unsqueeze(-1)  # shape: (B, 3, 1)
-
-        # Convert quaternion to rotation matrix
-        tooltip_rot_matrix = matrix_from_quat(start_quat)  # shape: (B, 3, 3)
-
-        # Compute world-space offset
-        world_offset = torch.bmm(tooltip_rot_matrix, tooltip_forward_offset).squeeze(-1)  # shape: (B, 3)
-
-        # Apply to start_pos
-        start_pos = start_pos + world_offset
-
-        holder_quat, holder_pos = tf_combine(
-            start_quat, start_pos, holder_to_tooltip_quat, holder_to_tooltip_pos
-        )
-
-        if not is_batched:
-            return holder_quat.squeeze(0), holder_pos.squeeze(0)
-        return holder_quat, holder_pos
-
-    # def reset_idx(self, env_ids):
-    #     """
-    #     Reset the environment and set fixed tumor positions.
-    #     This method ensures that the tumor position remains fixed and is set only once per environment.
-    #     """
-    #     super()._reset_idx(env_ids)
-        
-    #     root_state = self._robot.data.default_root_state.clone()
-    #     if not hasattr(self, "tumor_position_set"):
-    #         self.tumor_position_set = True
-    #         omni.log.info("Initializing tumor positions...")
-    #         for env_id in env_ids:
-    #             tumor_data = self.tumor_pickle[env_id]
-    #             tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device)
-    #             tumor_quat = torch.tensor(tumor_data["tumor_quat"], dtype=torch.float32, device=self.device)
-
-    #             self.tumor.set_local_poses(tumor_pos.unsqueeze(0), tumor_quat.unsqueeze(0), [env_id])
-    #             print(f"Fixed tumor position for env {env_id}: {tumor_pos}")
-    #     else:
-    #         print(f"Tumor position for environments {env_ids} remains fixed.")
-
-    #     for env_id in env_ids:
-    #         tumor_data = self.tumor_pickle[env_id]
-    #         path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
-    #         start_pose = tumor_data["start_pose"][path_idx]
-    #         start_pos = start_pose["position"].to(self.device)
-    #         start_quat = start_pose["quaternion"].to(self.device)
-    #         ttip_quat, ttip_pos = self.tooltip_to_holder(start_quat, start_pos)
-    #         root_state[env_id, :3] = ttip_pos
-    #         root_state[env_id, 3:7] = ttip_quat
-    #         root_state[env_id, 7:] = 0.0
-    #         self.active_path_idx[env_id] = path_idx
-    #         # Set flags and reset the environment status
-    #         self.trial_phase[env_id] = "preop"  # Start with preop phase
-    #         self.trial_done[env_id] = False  # Not done yet
-    #         self.pose_applied[env_id] = False  # Ensure pose isn't applied initially
-    #         self.retracting[env_id] = False  # Ensure retracting flag is reset
-    #         self.trial_counts[env_id] = 0  # Reset trial count
-    #     self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
-    #     self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
-    #     self._compute_intermediate_values(env_ids)
-    #     omni.log.info(f"Reset complete for envs: {env_ids}")
-
-
-    def set_tumor_positions(self):
-        for env_id in self.env_ids:
-            env_id = int(env_id)
-            offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
-            tumor_data = self.tumor_pickle[env_id]
-            tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device)
-            tumor_quat = torch.tensor(tumor_data["tumor_quat"], dtype=torch.float32, device=self.device)
-            tumor_centroid = torch.tensor(tumor_data["tumor_centroid"], dtype=torch.float32, device=self.device)
-            self.shuffled_tumor_centroids[env_id] = tumor_centroid  #+ offset
-            self.tumor.set_local_poses(tumor_pos.unsqueeze(0), tumor_quat.unsqueeze(0), [env_id])
-            print(f"Set tumor position for env {env_id}: {tumor_pos}")
-
     def _reset_idx(self, env_ids):
         """
             A) Randomly select a tumor centroid from the list of centroids
@@ -755,6 +571,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Time out if the episode length exceeds the maximum episode length
         - Tooltip reaches the tumor
         """
+        self._compute_intermediate_values(self.env_ids)
         # Done when tooltip reaches the tumor or maximum episode length is exceeded or number of trials exceeded
         distances = self.distance_to_tumor()
         tumor_reached = distances <= self.TUMOR_REACH_THRESHOLD
@@ -831,23 +648,25 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         return {"policy": obs}
 
-
     def _get_rewards(self):  # TODO: to get calculated Rewards
         """
         Get the rewards for the environment. This includes:
         a) RayCaster Camera reward based on distance to image plane and distance to camera
 
         """
-        total_reward = self.__compute_reward()
+        tip_to_tumor = self.distance_to_tumor()  # [B]
+        tip_to_vessel = self.distance_to_vessel()  # [B]
+        w_tumor_dist = self.cfg.w_tumor_dist
+        w_vessel_penalty = self.cfg.w_vessel_penalty
+        bonus_inside_tumor = self.cfg.bonus_inside_tumor
+        total_reward = self.compute_reward(tip_to_vessel, tip_to_tumor, self.potentials, self.prev_potentials, self.TUMOR_REACH_THRESHOLD, w_tumor_dist, w_vessel_penalty, bonus_inside_tumor)
         return total_reward
 
-    def _get_states(self):  # TODO: States
+    def _get_states(self):  # TODO: States for Asymmetric RL
         pass
 
-    def _get_actions(self):  # TODO: Actions
-        pass
-
-    def __compute_reward(self):  # TODO: actual Rewards
+    #@torch.jit.script
+    def compute_reward(self, tip_vessel, tip_tumor, potentials, prev_potentials, tumor_reach_threshold, w_tumor_dist, w_vessel_penalty, bonus_inside_tumor):  # TODO: actual Rewards
         """
         Reward structure:
         + reward for being closer to tumor
@@ -855,36 +674,92 @@ class BiopsyDirectEnv(DirectRLEnv):
         - penalty for high real-time collision score
         + bonus for being inside tumor
         """
-
-        # === 1. Compute raycast-based distances ===
-        tip_to_tumor = self.distance_to_tumor()      # shape: (N,)
-        tip_to_vessel = self.distance_to_vessel()    # shape: (N,)
-
-        # === 2. Real-time collision score (e.g. from your scoring function or heuristics) ===
-        # Dummy example: replace with your actual score function call
-        #current_collision_score = self.get_real_time_collision_scores()  # shape: (N,)
-
-        # === 3. Check if tip is inside tumor (binary mask for bonus) ===
-        #inside_tumor = self.check_tip_inside_tumor()  # shape: (N,), bool tensor
-
-        # === 4. Reward weights ===
-        w_tumor_dist = 5.0
-        w_vessel_penalty = 3.0
-        w_collision_score = 1.5
-        bonus_inside_tumor = 10.0
-
-        # === 5. Compute total reward ===
+        inside_tumor = (tip_tumor <= tumor_reach_threshold).float()
+        progress_reward = potentials - prev_potentials  # shape: (N,)
         reward = (
-            -w_tumor_dist * tip_to_tumor
-            -w_vessel_penalty * tip_to_vessel
-            #-w_collision_score * current_collision_score
-            #+ bonus_inside_tumor * inside_tumor.float()
+            - (w_tumor_dist * tip_tumor)
+            - (w_vessel_penalty * tip_vessel)
+            #-(self.cfg.w_collision_score * current_collision_score)
+            + (bonus_inside_tumor * inside_tumor.float())
+            + progress_reward
         )
 
         # === 6. Optional: clip or normalize if needed ===
         reward = torch.clip(reward, min=-100.0, max=100.0)
 
         return reward
+    
+    #@torch.jit.script
+    def compute_intermediate_values(self, tool_tip_pos: torch.Tensor, tumor_centroids: torch.Tensor, prev_potentials: torch.Tensor,):
+        to_tumor_centroid = tumor_centroids - tool_tip_pos
+        new_potentials = -torch.norm(to_tumor_centroid, dim=-1)
+        print(f"New potentials: {new_potentials}, Previous potentials: {prev_potentials}")
+        return new_potentials, prev_potentials
+
+    # ## --------------------------------------- ## #
+    # ## Additional Utility Functions for Visualization and Debugging ## #
+    # ## --------------------------------------- ## #
+
+    def tooltip_to_holder(self, start_quat, start_pos):
+        is_batched = len(start_quat.shape) == 2
+
+        if not is_batched:
+            start_quat = start_quat.unsqueeze(0)
+            start_pos = start_pos.unsqueeze(0)
+
+        start_quat = start_quat.to(dtype=torch.float32)
+        start_pos = start_pos.to(dtype=torch.float32)
+
+        batch_size = start_quat.shape[0]
+
+        tooltip_to_holder_pos = torch.tensor(
+            [0.02464, -0.00005, -0.0265], dtype=torch.float32, device=self.device
+        ).expand(batch_size, -1)
+
+        tooltip_to_holder_quat = torch.tensor(
+            R.from_euler("xyz", [0, 0, 1.5707]).as_quat(canonical=False),
+            dtype=torch.float32, device=self.device
+        ).expand(batch_size, -1)
+
+        holder_to_tooltip_quat, holder_to_tooltip_pos = tf_inverse(
+            tooltip_to_holder_quat, tooltip_to_holder_pos
+        )
+        batch_size = start_quat.shape[0]
+        closer_distance = 0.0025  # Distance to move the tooltip forward
+        # Define offset vector and expand for batch
+        tooltip_forward_offset = torch.tensor(
+            [0.0, -closer_distance, 0.0],
+            dtype=torch.float32, device=self.device
+        ).expand(batch_size, -1).unsqueeze(-1)  # shape: (B, 3, 1)
+
+        # Convert quaternion to rotation matrix
+        tooltip_rot_matrix = matrix_from_quat(start_quat)  # shape: (B, 3, 3)
+
+        # Compute world-space offset
+        world_offset = torch.bmm(tooltip_rot_matrix, tooltip_forward_offset).squeeze(-1)  # shape: (B, 3)
+
+        # Apply to start_pos
+        start_pos = start_pos + world_offset
+
+        holder_quat, holder_pos = tf_combine(
+            start_quat, start_pos, holder_to_tooltip_quat, holder_to_tooltip_pos
+        )
+
+        if not is_batched:
+            return holder_quat.squeeze(0), holder_pos.squeeze(0)
+        return holder_quat, holder_pos
+
+    def set_tumor_positions(self):
+        for env_id in self.env_ids:
+            env_id = int(env_id)
+            offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
+            tumor_data = self.tumor_pickle[env_id]
+            tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device)
+            tumor_quat = torch.tensor(tumor_data["tumor_quat"], dtype=torch.float32, device=self.device)
+            tumor_centroid = torch.tensor(tumor_data["tumor_centroid"], dtype=torch.float32, device=self.device)
+            self.shuffled_tumor_centroids[env_id] = tumor_centroid  #+ offset
+            self.tumor.set_local_poses(tumor_pos.unsqueeze(0), tumor_quat.unsqueeze(0), [env_id])
+            print(f"Set tumor position for env {env_id}: {tumor_pos}")
 
     def save_point_cloud_ply(self, filename, points: np.ndarray):
         with open(filename, 'w') as f:
