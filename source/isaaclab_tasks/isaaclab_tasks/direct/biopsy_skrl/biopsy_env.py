@@ -434,30 +434,65 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"Type of single action space: {type(self.single_action_space)}")
         offsets = self.scene.env_origins[self.env_ids]
 
-        if isinstance(self.single_action_space, gym.spaces.Box):
-            print(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
-            tooltip_pos = self._robot.data.body_pos_w[self.env_ids, self.tooltip_index]  # (B, 3)
-            tooltip_quat = self._robot.data.body_quat_w[self.env_ids, self.tooltip_index]  # (B, 4)
-            print(f"Current tooltip position: {tooltip_pos}, current quaternion: {tooltip_quat}")
-            delta_pos = self.actions[:, :2] # (B, 2)
-            new_pos = tooltip_pos.clone()
-            new_pos[:, 0] += delta_pos[:, 0]  # Update x
-            new_pos[:, 2] += delta_pos[:, 1]  # Update y
-            print(f"New pos: {new_pos}")
+        # if isinstance(self.single_action_space, gym.spaces.Box):
+        #     print(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
+        #     tooltip_pos = self._robot.data.body_pos_w[self.env_ids, self.tooltip_index]  # (B, 3)
+        #     tooltip_quat = self._robot.data.body_quat_w[self.env_ids, self.tooltip_index]  # (B, 4)
+        #     print(f"Current tooltip position: {tooltip_pos}, current quaternion: {tooltip_quat}")
+        #     delta_pos = self.actions[:, :2] # (B, 2)
+        #     new_pos = tooltip_pos.clone()
+        #     new_pos[:, 0] += delta_pos[:, 0]  # Update x
+        #     new_pos[:, 2] += delta_pos[:, 1]  # Update y
+        #     print(f"New pos: {new_pos}")
 
-            new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(tooltip_quat, new_pos, preserve_orientation=True)
+        #     new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(tooltip_quat, new_pos, preserve_orientation=True)
+        #     root_state = self._robot.data.default_root_state.clone()
+        #     root_state[self.env_ids, :3] = new_holder_pos #+ offsets[self.env_ids]
+        #     root_state[self.env_ids, 3:7] = new_holder_quat
+        #     root_state[self.env_ids, 7:] = 0.0
+        #     self.pose_applied[self.env_ids] = True  # Lock pose application
+        #     try:
+        #         self._robot.write_root_pose_to_sim(root_state[self.env_ids, :7], env_ids=self.env_ids)
+        #         self._robot.write_root_velocity_to_sim(root_state[self.env_ids, 7:], env_ids=self.env_ids)
+        #         print(f"Applied new pose to envs: {self.env_ids}, pos: {new_holder_pos}, quat: {new_holder_quat}")
+        #     except Exception as e:
+        #         print(f"Pose application failed due to: {e}")
+        #         traceback.print_exc()
+        
+        # NOT WORKING
+        if isinstance(self.single_action_space, gym.spaces.Box):
+            envs_to_apply = self.env_ids[~self.pose_applied[self.env_ids]]
+            if envs_to_apply.numel() == 0:
+                return
+
+            tooltip_pos = self._robot.data.body_pos_w[envs_to_apply, self.tooltip_index]
+            tooltip_quat = self._robot.data.body_quat_w[envs_to_apply, self.tooltip_index]
+            delta_pos = self.actions[envs_to_apply, :2]
+
+            new_pos = tooltip_pos.clone()
+            new_pos[:, 0] += delta_pos[:, 0]
+            new_pos[:, 2] += delta_pos[:, 1]
+
+            new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(
+                tooltip_quat, new_pos, preserve_orientation=True
+            )
+
             root_state = self._robot.data.default_root_state.clone()
-            root_state[self.env_ids, :3] = new_holder_pos + offsets[self.env_ids]
-            root_state[self.env_ids, 3:7] = new_holder_quat
-            root_state[self.env_ids, 7:] = 0.0
-            self.pose_applied[self.env_ids] = True  # Lock pose application
+            root_state[envs_to_apply, :3] = new_holder_pos
+            root_state[envs_to_apply, 3:7] = new_holder_quat
+            root_state[envs_to_apply, 7:] = 0.0
+            self.pose_applied[envs_to_apply] = True
+
             try:
-                self._robot.write_root_pose_to_sim(root_state[self.env_ids, :7], env_ids=self.env_ids)
-                self._robot.write_root_velocity_to_sim(root_state[self.env_ids, 7:], env_ids=self.env_ids)
-                print(f"Applied new pose to envs: {self.env_ids}, pos: {new_holder_pos}, quat: {new_holder_quat}")
+                self._robot.write_root_pose_to_sim(root_state[envs_to_apply, :7], env_ids=envs_to_apply)
+                self._robot.write_root_velocity_to_sim(root_state[envs_to_apply, 7:], env_ids=envs_to_apply)
+                print(f"✅ Applied pose to envs: {envs_to_apply}")
             except Exception as e:
-                print(f"Pose application failed due to: {e}")
-                traceback.print_exc()
+                print(f"❌ Pose application failed: {e}")
+
+
+
+
             # for i, env_id in enumerate(self.env_ids):
             #     if not self.pose_applied[env_id]:  # 🔒 Guard
             #         print(f"[env {env_id}] Applying action for env {env_id}")
@@ -572,7 +607,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.tool_tip_pos = self._robot.data.body_pos_w[env_ids, self.tooltip_index]
         self.tool_tip_quat = self._robot.data.body_quat_w[env_ids, self.tooltip_index]
         #self.potentials, self.prev_potentials = self.compute_intermediate_values(env_ids, self.tool_tip_pos, self.shuffled_tumor_centroids, self.prev_potentials)
-        self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(env_ids, self.tool_tip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
+        self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(self.tool_tip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
 
     def _reset_idx(self, env_ids):
         """
