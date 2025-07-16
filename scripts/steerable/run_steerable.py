@@ -61,12 +61,13 @@ from isaaclab.assets import Articulation
 from isaaclab.sim import SimulationContext
 from isaaclab.assets import RigidObject, RigidObjectCfg
 from pxr import Usd, UsdGeom, Gf
+
 # Parameters
 insertion_depth = 0.05  # mm per segment
 num_bins = 16  # Number of bins per segment
 bin_angle_deg = 22.5  # Narrow bin angle
 bin_angle_rad = np.deg2rad(bin_angle_deg)
-num_steps = 100
+num_steps = 50
 
 @configclass
 class SteerableSceneCfg(InteractiveSceneCfg):
@@ -168,56 +169,50 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
     # Extract scene entities
     # note: we only do this here for readability. In general, it is better to access the entities directly from
     #   the dictionary. This dictionary is replaced by the InteractiveScene class in the next tutorial.
+    num_envs = scene.num_envs
+    scene_origins = scene.env_origins
     robot = scene["needle"]
-    print(type(robot))
-    current_gravity_status = robot.root_physx_view.get_disable_gravities()    # https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/extensions/runtime/source/omni.physics.tensors/docs/api/python.html#omni.physics.tensors.impl.api.RigidBodyView.get_disable_gravities
-    print("[INFO]: Current gravity status:", current_gravity_status)  
-    if current_gravity_status == 0:
+    current_gravity_status = robot.root_physx_view.get_disable_gravities()   # https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/extensions/runtime/source/omni.physics.tensors/docs/api/python.html#omni.physics.tensors.impl.api.RigidBodyView.get_disable_gravities
+    print("[INFO]: Current gravity status:", current_gravity_status, current_gravity_status[0])  
+    if current_gravity_status[0] == 0:
         print("[INFO]: Disabling gravity for the robot.")
-        robot.root_physx_view.set_disable_gravities(1, 1)
+        robot.root_physx_view.set_disable_gravities(1, num_envs)
+    origins = [torch.tensor(o, device=sim.device, dtype=torch.float32) for o in origins]
+    start_points = torch.stack([origins[0] + scene_origins[i] for i in range(num_envs)])
+    goal_points = torch.stack([origins[1] + scene_origins[i] for i in range(num_envs)])
+    curved_paths = []
+
     #Define simulation stepping
     sim_dt = sim.get_physics_dt()
     count = 0
-    # Start and goal setup
-    start_point = torch.tensor(origins[0], device=sim.device, dtype=torch.float32)
-    goal_point = torch.tensor(origins[1], device=sim.device, dtype=torch.float32)
-    print("[INFO]: Start Point:", start_point)
-    print("[INFO]: Goal Point:", goal_point)
-    # Calculate goal direction
-    goal_direction = goal_point - start_point
-    # Normalize goal direction
-    if torch.norm(goal_direction) == 0:
-        raise ValueError("Start and goal points cannot be the same.")
-    goal_direction = goal_direction / torch.norm(goal_direction)
-    goal_point = start_point + goal_direction * insertion_depth * num_steps
+    origins = [torch.tensor(o, device=sim.device, dtype=torch.float32) for o in origins]
 
-    # Generate path and bin vectors
-    curved_path = [start_point]
-    bin_vectors_per_step = []
+    for env_id in range(num_envs):
+        # Calculate goal direction
+        goal_direction = goal_points[env_id] - start_points[env_id]
+        goal_direction = goal_direction / torch.norm(goal_direction)
+        target = start_points[env_id] + goal_direction * insertion_depth * num_steps
 
-    current_pos = start_point.clone()
-    heading = goal_direction.clone()
+        # Generate path and bin vectors
+        path = [start_points[env_id]]
+        current_pos = start_points[env_id].clone()
+        heading = goal_direction.clone()
 
-    for _ in range(num_steps):
-        bins = generate_bin_directions(heading, num_bins, bin_angle_rad)
-        bin_vectors_per_step.append((current_pos.clone(), bins))
-        best_bin = min(bins, key=lambda b: torch.linalg.norm(current_pos + insertion_depth * b - goal_point))
-        current_pos = current_pos + insertion_depth * best_bin
-        heading = best_bin
-        curved_path.append(current_pos.clone())
+        for _ in range(num_steps):
+            bins = generate_bin_directions(heading, num_bins, bin_angle_rad)
+            best_bin = min(bins, key=lambda b: torch.linalg.norm(current_pos + insertion_depth * b - target))
+            current_pos += insertion_depth * best_bin
+            heading = best_bin
+            path.append(current_pos.clone())
 
-    print("[INFO]: Curved Path:", curved_path)
-    curved_path = torch.stack(curved_path)
-    straight_path = [start_point + goal_direction * insertion_depth * i for i in range(num_steps + 1)]
-    straight_path = torch.stack(straight_path)
+        curved_paths.append(torch.stack(path))
+    path_idx = torch.zeros(num_envs, dtype=torch.int32, device=sim.device)
+
     if not args_cli.headless:
-        draw_points(curved_path.cpu().numpy(), color=(0.2, 0.8, 0.2, 1.0), size=4.0)
-        draw_lines(
-            start_point.cpu().numpy(),
-            goal_point.cpu().numpy(),
-            color="green"
-        )
-    
+        for i in range(num_envs):
+            draw_points(curved_paths[i].cpu().numpy(), color=(0.2, 0.8, 0.2, 1.0), size=4.0)
+            draw_lines(start_points[i].cpu(), goal_points[i].cpu(), color="green")
+
     def rotation_between(vec1, vec2):
         vec1 = vec1 / torch.norm(vec1)
         vec2 = vec2 / torch.norm(vec2)
@@ -241,37 +236,26 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
             xyz = axis * s
             return torch.cat((w.unsqueeze(0), xyz))
 
-    path_idx = 0
     count = 0
-
     while simulation_app.is_running():
         if count % 50 == 0:
-            count = 0
             root_state = robot.data.default_root_state.clone()
-            path_pos = curved_path[path_idx]
-            root_state[:, :3] = path_pos
-
-            # --- Compute orientation so needle tip faces forward ---
-            if path_idx < len(curved_path) - 1:
-                next_pos = curved_path[path_idx + 1]
-            else:
-                next_pos = curved_path[path_idx]
-
-            direction = next_pos - path_pos
-            direction = direction / torch.norm(direction)
-
-            # Assuming needle tip points in +Z
-            needle_forward = torch.tensor([0.0, 0.0, 1.0], device=direction.device)
-            rotation = rotation_between(needle_forward, direction)
-            root_state[:, 3:7] = rotation  # quaternion (w, x, y, z)
-
-            print(f"[INFO]: Pos = {path_pos.tolist()}, Rotation = {rotation.tolist()}")
+            for i in range(num_envs):
+                path = curved_paths[i]
+                idx = path_idx[i].item()
+                pos = path[idx]
+                next_pos = path[idx + 1] if idx < len(path) - 1 else path[idx]
+                direction = next_pos - pos
+                direction = direction / torch.norm(direction)
+                root_state[i, :3] = pos
+                needle_forward = torch.tensor([0.0, 0.0, 1.0], device=sim.device, dtype=direction.dtype)
+                rotation = rotation_between(needle_forward, direction)
+                root_state[i, 3:7] = rotation
+                path_idx[i] = (idx + 1) % len(path)
 
             robot.write_root_pose_to_sim(root_state[:, :7])
             robot.write_root_velocity_to_sim(root_state[:, 7:])
             robot.reset()
-
-            path_idx = (path_idx + 1) % len(curved_path)
 
         robot.write_data_to_sim()
         sim.step()
@@ -286,7 +270,7 @@ def main():
     # Set main camera
     sim.set_camera_view([2.5, 0.0, 4.0], [0.0, 0.0, 2.0])
     # Design scene
-    scene_cfg = SteerableSceneCfg(num_envs=args_cli.num_envs, env_spacing=2.0)
+    scene_cfg = SteerableSceneCfg(num_envs=args_cli.num_envs, env_spacing=2.0, replicate_physics=False)
     scene = InteractiveScene(scene_cfg)
     # Play the simulator
     sim.reset()
