@@ -3,7 +3,7 @@ from scipy.linalg import expm
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import os
-
+import datetime
 # Utility functions
 def skew(v):
     return np.array([[0, -v[2], v[1]],
@@ -18,7 +18,7 @@ def twist_to_matrix(v, w):
 
 # Needle simulation with adjustable parameters
 def generate_needle_path(u1=0.01, u2=0.1, phi_deg=30, r=0.2, reb=0.001,
-                         dt=1.0, num_steps=5, start=np.eye(4), goal=np.array([0.015, -0.005, 0.05])):
+                         dt=0.5, num_steps=100, start=np.eye(4), goal=np.array([0.015, -0.005, 0.05])):
     phi = np.deg2rad(phi_deg)
     poses = [start.copy()]
     g_current = start.copy()
@@ -54,6 +54,7 @@ def generate_needle_path(u1=0.01, u2=0.1, phi_deg=30, r=0.2, reb=0.001,
         poses.append(g_current.copy())
     return poses
 
+
 # Visualization and saving
 def visualize_and_save(poses, start, goal, title, filename):
     positions = np.array([g[:3, 3] for g in poses])
@@ -78,9 +79,11 @@ def visualize_and_save(poses, start, goal, title, filename):
     ax.set_title(title)
     ax.legend()
     plt.tight_layout()
-    os.makedirs("/home/sanjay/thesis_replications/forked/IsaacLab/scripts/steerable/needle_plots", exist_ok=True)
-    plt.savefig(f"/home/sanjay/thesis_replications/forked/IsaacLab/scripts/steerable/needle_plots/{filename}.png")
+    date = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+    os.makedirs(f"/home/sanjay/thesis_replications/forked/IsaacLab/scripts/steerable/needle_plots/{date}", exist_ok=True)
+    plt.savefig(f"/home/sanjay/thesis_replications/forked/IsaacLab/scripts/steerable/needle_plots/{date}/{filename}.png")
     plt.close()
+
 
 # Run for different phi and r
 start_pose = np.eye(4)
@@ -88,18 +91,16 @@ goal_point = np.array([0.015, -0.005, 0.05])
 phi_values = [10, 20, 30, 45]
 radius_values = [0.1, 0.2, 0.4]
 
+
 # Generate plots for varying phi
 for phi in phi_values:
     poses = generate_needle_path(phi_deg=phi, r=0.2, start=start_pose, goal=goal_point)
     visualize_and_save(poses, start_pose, goal_point, f"Needle Path (phi={phi}°)", f"phi_{phi}")
+
 
 # Generate plots for varying r
 for r in radius_values:
     poses = generate_needle_path(phi_deg=30, r=r, start=start_pose, goal=goal_point)
     visualize_and_save(poses, start_pose, goal_point, f"Needle Path (r={r}m)", f"radius_{r}")
 
-import os
-from IPython.display import Image, display
-image_files = [f"needle_plots/{f}" for f in os.listdir("needle_plots") if f.endswith(".png")]
-display(Image(filename=image_files[0]))  # Show one as example
 
