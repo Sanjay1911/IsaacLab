@@ -83,7 +83,7 @@ class SteerableSceneCfg(InteractiveSceneCfg):
     # articulation
     needle: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/needle",
-        spawn=sim_utils.ConeCfg(
+        spawn=sim_utils.CylinderCfg(
             radius=0.002,
             height=0.1,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
