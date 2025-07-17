@@ -61,7 +61,8 @@ from isaaclab.assets import Articulation
 from isaaclab.sim import SimulationContext
 from isaaclab.assets import RigidObject, RigidObjectCfg
 from pxr import Usd, UsdGeom, Gf
-
+# torch.manual_seed(42)  # for reproducibility
+# np.random.seed(42)  # for reproducibility
 # Parameters
 insertion_depth = 0.05  # mm per segment
 num_bins = 16  # Number of bins per segment
@@ -178,8 +179,10 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
         print("[INFO]: Disabling gravity for the robot.")
         robot.root_physx_view.set_disable_gravities(1, num_envs)
     origins = [torch.tensor(o, device=sim.device, dtype=torch.float32) for o in origins]
-    start_points = torch.stack([origins[0] + scene_origins[i] for i in range(num_envs)])
-    goal_points = torch.stack([origins[1] + scene_origins[i] for i in range(num_envs)])
+    start_points = torch.stack([torch.rand(2, device=sim.device, dtype=torch.float32) + origins[0] + scene_origins[i] for i in range(num_envs)])
+    print(f"Start Points after perturbance: {start_points}")
+    goal_points = torch.stack([torch.rand(2, device=sim.device, dtype=torch.float32) + origins[1] + scene_origins[i] for i in range(num_envs)])
+    print(f"Goal Points after perturbance: {goal_points}")
     curved_paths = []
 
     #Define simulation stepping
