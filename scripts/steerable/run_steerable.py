@@ -3,6 +3,7 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Tutorial on Preop Path Planning with simulated brainshift and Intraoperative Vision")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to spawn.")
+parser.add_argument("--type", type=str, default="greedy", help="Type of the scene to spawn.")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -69,6 +70,15 @@ num_bins = 16  # Number of bins per segment
 bin_angle_deg = 22.5  # Narrow bin angle
 bin_angle_rad = np.deg2rad(bin_angle_deg)
 num_steps = 50
+
+U1 = torch.tensor(0.01, device=args_cli.device, dtype=torch.float32)  # mm/s
+U2 = torch.tensor(0.1, device=args_cli.device, dtype=torch.float32)  # mm/s
+REB = torch.tensor(0.001, device=args_cli.device, dtype=torch.float32)  # mm
+PHI_Deg = torch.tensor(30, device=args_cli.device, dtype=torch.float32)  # degrees
+PHI_Rad = torch.deg2rad(PHI_Deg)  # radians
+CURV = torch.tensor(0.2, device=args_cli.device, dtype=torch.float32)  # mm
+dt = torch.tensor(0.5, device=args_cli.device, dtype=torch.float32)  # seconds
+
 
 @configclass
 class SteerableSceneCfg(InteractiveSceneCfg):
@@ -165,6 +175,87 @@ def generate_bin_directions(base_dir, num_bins=8, angle=bin_angle_rad):
     return directions
 
 
+def skew(v):
+    return torch.tensor([
+        [0, -v[2], v[1]],
+        [v[2], 0, -v[0]],
+        [-v[1], v[0], 0]
+    ], device=v.device, dtype=v.dtype)
+
+
+def twist_to_matrix(v, w):
+    mat = torch.zeros((4, 4), device=v.device, dtype=v.dtype)
+    mat[:3, :3] = skew(w)
+    mat[:3, 3] = v
+    return mat
+
+
+def generate_needle_path(start, goal, u1=0.01, u2=0.0, phi_deg=30.0, r=0.2, reb=0.001, dt=1.0, num_steps=100):
+    """Generates a needle path based on twist kinematics using SE(3)."""
+    phi = torch.deg2rad(torch.tensor(phi_deg, device=start.device, dtype=start.dtype))
+
+    poses = [start.clone()]
+    g_current = start.clone()
+
+    for _ in range(num_steps):
+        tip_pos = g_current[:3, 3]
+        to_goal = goal - tip_pos
+        to_goal = to_goal / torch.linalg.norm(to_goal)
+        current_dir = g_current[:3, 2]
+        angle_diff = torch.acos(torch.clamp(torch.dot(current_dir, to_goal), -1, 1))
+        direction_changed = angle_diff > torch.deg2rad(torch.tensor(10.0, device=start.device))
+
+        v = torch.tensor([0, -u1 * torch.sin(phi), u1 * torch.cos(phi)], device=start.device, dtype=start.dtype)
+        w = torch.tensor([u1 / r, 0, u2], device=start.device, dtype=start.dtype)
+        xi_hat = twist_to_matrix(v, w)
+
+        if direction_changed:
+            t_mod = reb / u1
+            g_partial = g_current @ torch.linalg.matrix_exp(xi_hat * (dt - t_mod))
+            z_axis = g_partial[:3, 2]
+            trans = torch.eye(4, device=start.device, dtype=start.dtype)
+            trans[:3, 3] = z_axis * reb
+
+            theta = torch.atan2(to_goal[1], to_goal[0]) - torch.atan2(z_axis[1], z_axis[0])
+            rot_z = torch.eye(4, device=start.device, dtype=start.dtype)
+            rot_z[:3, :3] = torch.tensor([
+                [torch.cos(theta), -torch.sin(theta), 0],
+                [torch.sin(theta), torch.cos(theta), 0],
+                [0, 0, 1]
+            ], device=start.device, dtype=start.dtype)
+            g_current = g_partial @ trans @ rot_z
+        else:
+            g_current = g_current @ torch.linalg.matrix_exp(xi_hat * dt)
+
+        poses.append(g_current.clone())
+
+    return poses
+
+
+def rotation_between(vec1, vec2):
+    vec1 = vec1 / torch.norm(vec1)
+    vec2 = vec2 / torch.norm(vec2)
+    dot = torch.dot(vec1, vec2)
+
+    if dot > 0.9999:
+        return torch.tensor([1.0, 0.0, 0.0, 0.0], device=vec1.device)
+    elif dot < -0.9999:
+        orthogonal = torch.tensor([1.0, 0.0, 0.0], device=vec1.device)
+        if torch.allclose(vec1, orthogonal, atol=1e-3):
+            orthogonal = torch.tensor([0.0, 1.0, 0.0], device=vec1.device)
+        axis = torch.cross(vec1, orthogonal)
+        axis = axis / torch.norm(axis)
+        return torch.cat((torch.tensor([0.0], device=vec1.device), axis))
+    else:
+        axis = torch.cross(vec1, vec2)
+        axis = axis / torch.norm(axis)
+        angle = torch.acos(dot)
+        s = torch.sin(angle / 2)
+        w = torch.cos(angle / 2)
+        xyz = axis * s
+        return torch.cat((w.unsqueeze(0), xyz))
+        
+
 def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, origins):
     """Runs the simulation loop."""
     # Extract scene entities
@@ -179,9 +270,10 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
         print("[INFO]: Disabling gravity for the robot.")
         robot.root_physx_view.set_disable_gravities(1, num_envs)
     origins = [torch.tensor(o, device=sim.device, dtype=torch.float32) for o in origins]
-    start_points = torch.stack([torch.rand(2, device=sim.device, dtype=torch.float32) + origins[0] + scene_origins[i] for i in range(num_envs)])
+    # TODO: Add perturbance to start and goal points
+    start_points = torch.stack([origins[0] + scene_origins[i] for i in range(num_envs)])
     print(f"Start Points after perturbance: {start_points}")
-    goal_points = torch.stack([torch.rand(2, device=sim.device, dtype=torch.float32) + origins[1] + scene_origins[i] for i in range(num_envs)])
+    goal_points = torch.stack([origins[1] + scene_origins[i] for i in range(num_envs)])
     print(f"Goal Points after perturbance: {goal_points}")
     curved_paths = []
 
@@ -201,43 +293,31 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
         current_pos = start_points[env_id].clone()
         heading = goal_direction.clone()
 
-        for _ in range(num_steps):
-            bins = generate_bin_directions(heading, num_bins, bin_angle_rad)
-            best_bin = min(bins, key=lambda b: torch.linalg.norm(current_pos + insertion_depth * b - target))
-            current_pos += insertion_depth * best_bin
-            heading = best_bin
-            path.append(current_pos.clone())
+        if args_cli.type == "greedy":
+            for _ in range(num_steps):
+                bins = generate_bin_directions(heading, num_bins, bin_angle_rad)
+                best_bin = min(bins, key=lambda b: torch.linalg.norm(current_pos + insertion_depth * b - target))
+                current_pos += insertion_depth * best_bin
+                heading = best_bin
+                path.append(current_pos.clone())
+        elif args_cli.type == "steerable":
+            # Use the generate_needle_path to create a steerable path
+            start_pose = torch.eye(4, device=sim.device, dtype=torch.float32)
+            start_pose[:3, 3] = start_points[env_id]
 
+            poses = generate_needle_path(start=start_pose, goal=goal_points[env_id])
+            for pose in poses:
+                path.append(pose[:3, 3])
+        else:
+            raise ValueError(f"Unknown type: {args_cli.type}. Supported types are 'greedy' and 'steerable'.")
         curved_paths.append(torch.stack(path))
+
     path_idx = torch.zeros(num_envs, dtype=torch.int32, device=sim.device)
 
     if not args_cli.headless:
         for i in range(num_envs):
             draw_points(curved_paths[i].cpu().numpy(), color=(0.2, 0.8, 0.2, 1.0), size=4.0)
-            draw_lines(start_points[i].cpu(), goal_points[i].cpu(), color="green")
-
-    def rotation_between(vec1, vec2):
-        vec1 = vec1 / torch.norm(vec1)
-        vec2 = vec2 / torch.norm(vec2)
-        dot = torch.dot(vec1, vec2)
-
-        if dot > 0.9999:
-            return torch.tensor([1.0, 0.0, 0.0, 0.0], device=vec1.device)
-        elif dot < -0.9999:
-            orthogonal = torch.tensor([1.0, 0.0, 0.0], device=vec1.device)
-            if torch.allclose(vec1, orthogonal, atol=1e-3):
-                orthogonal = torch.tensor([0.0, 1.0, 0.0], device=vec1.device)
-            axis = torch.cross(vec1, orthogonal)
-            axis = axis / torch.norm(axis)
-            return torch.cat((torch.tensor([0.0], device=vec1.device), axis))
-        else:
-            axis = torch.cross(vec1, vec2)
-            axis = axis / torch.norm(axis)
-            angle = torch.acos(dot)
-            s = torch.sin(angle / 2)
-            w = torch.cos(angle / 2)
-            xyz = axis * s
-            return torch.cat((w.unsqueeze(0), xyz))
+            #draw_lines(start_points[i].cpu(), goal_points[i].cpu(), color="green")
 
     count = 0
     while simulation_app.is_running():
@@ -264,6 +344,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
         sim.step()
         count += 1
         robot.update(sim_dt)
+
 
 def main():
     """Main function."""
