@@ -3,53 +3,79 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+# Future imports for compatibility
 from __future__ import annotations
-from typing import Sequence
-import torch
-torch.set_printoptions(profile="full")
+
+# Standard libraries
 import sys
+import random
+import traceback
+
+# Numerical & scientific computing
 import numpy as np
 np.set_printoptions(threshold=sys.maxsize)
-import traceback
-from pxr import UsdGeom, UsdPhysics, Gf
-import open3d as o3d
-from gym.spaces import Box, Dict, Discrete, MultiBinary, MultiDiscrete, Tuple
-import gymnasium as gym
+
+import torch
+torch.set_printoptions(profile="full")
+
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
-import math
-import random
+
+# Gym and RL-related modules
+from gym.spaces import Box, Dict, Discrete, MultiDiscrete, Tuple
+import gymnasium as gym
+
+# USD and Omniverse / IsaacSim core libraries
+from pxr import UsdGeom, Gf
 import omni.log
-from isaacsim.core.utils.stage import get_current_stage
-from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
-from pxr import UsdGeom
+
+# Stage and prim management
 import isaacsim.core.utils.prims as prim_utils
-from isaacsim.core.cloner import GridCloner
 import isaacsim.core.utils.stage as stage_utils
-# try:
-#     from isaacsim.util.debug_draw import _debug_draw
-# except ImportError:
-#     from omni.isaac.debug_draw import _debug_draw
+from isaacsim.core.utils.stage import get_current_stage
+from isaacsim.core.cloner import GridCloner
+
+# Transform utilities
+from isaacsim.core.utils.torch.transformations import (
+    tf_combine, tf_inverse, tf_vector
+)
+
+# IsaacLab core components
 import isaaclab.sim as sim_utils
-from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
-from isaaclab.assets import Articulation, ArticulationCfg
+from isaaclab.sim import SimulationCfg
+
+# RL environment and scene configuration
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
-from isaaclab.assets import AssetBaseCfg
-from isaaclab.utils import configclass
+
+# Assets and actuators
+from isaaclab.assets import Articulation, AssetBaseCfg
+
+# Sensors and raycasters
+from isaaclab.sensors.ray_caster import (
+    RayCasterCameraCfg, RayCasterCfg, patterns
+)
+
+# Spawning and asset management
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab.utils.math import sample_uniform, normalize, quat_mul, quat_mul,quat_inv,quat_apply,axis_angle_from_quat,quat_from_angle_axis, matrix_from_quat
-from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.sensors.ray_caster import RayCasterCamera, RayCasterCameraCfg, patterns
-from isaaclab.sensors.ray_caster import RayCasterCfg, patterns, RayCaster
-from isaaclab_assets import UR5_CFG
+
+# IsaacLab utilities
+from isaaclab.utils import configclass
+from isaaclab.utils.io import dump_pickle, load_pickle
+
+# Math utilities
+from isaaclab.utils.math import matrix_from_quat
+
+# Visualization and markers
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
-from isaaclab.utils.io import dump_pickle, load_pickle
-from isaaclab.utils.warp import convert_to_warp_mesh, multi_raycast_mesh
-import warp as wp
-#from . import biopsy_preop
+
+# Open3D for point cloud / mesh processing
+import open3d as o3d
+
+# IsaacLab asset presets
+from isaaclab_assets import UR5_CFG
+
 @configclass
 class MinimalSceneCfg(InteractiveSceneCfg):
     ground = AssetBaseCfg(
