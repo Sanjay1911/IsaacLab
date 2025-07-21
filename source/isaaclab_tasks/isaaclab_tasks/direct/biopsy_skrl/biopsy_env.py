@@ -65,7 +65,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     skull = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Skull",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -73,11 +73,18 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
+            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
 
+    tumor = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Tumor",
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    )
     # vessel_native = AssetBaseCfg(
     #     prim_path="{ENV_REGEX_NS}/OVessel",
     #     spawn=sim_utils.UsdFileCfg(
@@ -85,14 +92,6 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     #     ),
     #     init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     # )
-
-    tumor = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Tumor",
-        spawn=sim_utils.MeshFileCfg(
-            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
-    )
 
     robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
@@ -159,7 +158,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
     episode_length_s = 8.3333  # 500 timesteps
-    decimation = 2
+    decimation = 120
     action_space = 3
     observation_space = 23
     state_space = 0
@@ -340,7 +339,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Brain Shift 
         self.brain_shift_data = []
-        shift_data = load_pickle("custom/path_comparison/path_comparison/precomputed_brain_deformations10envs.pkl")
+        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations_10envs.pkl")
         print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
         for env_id in range(self.scene.num_envs):
             try:
@@ -420,6 +419,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.actions = (((self.actions - a)/(b - a))*(high-low))+low  # Normalize actions to [-1, 1]
         self.new_actions = 0.5 * (self.actions + 1.0) * (high - low) + low
         #self.actions = torch.clamp(self.actions, low, high)
+        print("Simulation step:",self.sim)
         print(f"Scaled actions: {self.actions}, {self.new_actions}")
 
         # actions = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
@@ -434,61 +434,61 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"Type of single action space: {type(self.single_action_space)}")
         offsets = self.scene.env_origins[self.env_ids]
 
-        # if isinstance(self.single_action_space, gym.spaces.Box):
-        #     print(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
-        #     tooltip_pos = self._robot.data.body_pos_w[self.env_ids, self.tooltip_index]  # (B, 3)
-        #     tooltip_quat = self._robot.data.body_quat_w[self.env_ids, self.tooltip_index]  # (B, 4)
-        #     print(f"Current tooltip position: {tooltip_pos}, current quaternion: {tooltip_quat}")
-        #     delta_pos = self.actions[:, :2] # (B, 2)
-        #     new_pos = tooltip_pos.clone()
-        #     new_pos[:, 0] += delta_pos[:, 0]  # Update x
-        #     new_pos[:, 2] += delta_pos[:, 1]  # Update y
-        #     print(f"New pos: {new_pos}")
+        if isinstance(self.single_action_space, gym.spaces.Box):
+            print(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
+            tooltip_pos = self._robot.data.body_pos_w[self.env_ids, self.tooltip_index]  # (B, 3)
+            tooltip_quat = self._robot.data.body_quat_w[self.env_ids, self.tooltip_index]  # (B, 4)
+            print(f"Current tooltip position: {tooltip_pos}, current quaternion: {tooltip_quat}")
+            delta_pos = self.actions[:, :2] # (B, 2)
+            new_pos = tooltip_pos.clone()
+            new_pos[:, 0] += delta_pos[:, 0]  # Update x
+            new_pos[:, 2] += delta_pos[:, 1]  # Update y
+            print(f"New pos: {new_pos}")
 
-        #     new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(tooltip_quat, new_pos, preserve_orientation=True)
-        #     root_state = self._robot.data.default_root_state.clone()
-        #     root_state[self.env_ids, :3] = new_holder_pos #+ offsets[self.env_ids]
-        #     root_state[self.env_ids, 3:7] = new_holder_quat
-        #     root_state[self.env_ids, 7:] = 0.0
-        #     self.pose_applied[self.env_ids] = True  # Lock pose application
-        #     try:
-        #         self._robot.write_root_pose_to_sim(root_state[self.env_ids, :7], env_ids=self.env_ids)
-        #         self._robot.write_root_velocity_to_sim(root_state[self.env_ids, 7:], env_ids=self.env_ids)
-        #         print(f"Applied new pose to envs: {self.env_ids}, pos: {new_holder_pos}, quat: {new_holder_quat}")
-        #     except Exception as e:
-        #         print(f"Pose application failed due to: {e}")
-        #         traceback.print_exc()
+            new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(tooltip_quat, new_pos, preserve_orientation=True)
+            root_state = self._robot.data.default_root_state.clone()
+            root_state[self.env_ids, :3] = new_holder_pos #+ offsets[self.env_ids]
+            root_state[self.env_ids, 3:7] = new_holder_quat
+            root_state[self.env_ids, 7:] = 0.0
+            self.pose_applied[self.env_ids] = True  # Lock pose application
+            try:
+                self._robot.write_root_pose_to_sim(root_state[self.env_ids, :7], env_ids=self.env_ids)
+                self._robot.write_root_velocity_to_sim(root_state[self.env_ids, 7:], env_ids=self.env_ids)
+                print(f"Applied new pose to envs: {self.env_ids}, pos: {new_holder_pos}, quat: {new_holder_quat}")
+            except Exception as e:
+                print(f"Pose application failed due to: {e}")
+                traceback.print_exc()
         
         # NOT WORKING
-        if isinstance(self.single_action_space, gym.spaces.Box):
-            envs_to_apply = self.env_ids[~self.pose_applied[self.env_ids]]
-            if envs_to_apply.numel() == 0:
-                return
+        # if isinstance(self.single_action_space, gym.spaces.Box):
+        #     envs_to_apply = self.env_ids[~self.pose_applied[self.env_ids]]
+        #     if envs_to_apply.numel() == 0:
+        #         return
 
-            tooltip_pos = self._robot.data.body_pos_w[envs_to_apply, self.tooltip_index]
-            tooltip_quat = self._robot.data.body_quat_w[envs_to_apply, self.tooltip_index]
-            delta_pos = self.actions[envs_to_apply, :2]
+        #     tooltip_pos = self._robot.data.body_pos_w[envs_to_apply, self.tooltip_index]
+        #     tooltip_quat = self._robot.data.body_quat_w[envs_to_apply, self.tooltip_index]
+        #     delta_pos = self.actions[envs_to_apply, :2]
 
-            new_pos = tooltip_pos.clone()
-            new_pos[:, 0] += delta_pos[:, 0]
-            new_pos[:, 2] += delta_pos[:, 1]
+        #     new_pos = tooltip_pos.clone()
+        #     new_pos[:, 0] += delta_pos[:, 0]
+        #     new_pos[:, 2] += delta_pos[:, 1]
 
-            new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(
-                tooltip_quat, new_pos, preserve_orientation=True
-            )
+        #     new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(
+        #         tooltip_quat, new_pos, preserve_orientation=True
+        #     )
 
-            root_state = self._robot.data.default_root_state.clone()
-            root_state[envs_to_apply, :3] = new_holder_pos
-            root_state[envs_to_apply, 3:7] = new_holder_quat
-            root_state[envs_to_apply, 7:] = 0.0
-            self.pose_applied[envs_to_apply] = True
+        #     root_state = self._robot.data.default_root_state.clone()
+        #     root_state[envs_to_apply, :3] = new_holder_pos
+        #     root_state[envs_to_apply, 3:7] = new_holder_quat
+        #     root_state[envs_to_apply, 7:] = 0.0
+        #     self.pose_applied[envs_to_apply] = True
 
-            try:
-                self._robot.write_root_pose_to_sim(root_state[envs_to_apply, :7], env_ids=envs_to_apply)
-                self._robot.write_root_velocity_to_sim(root_state[envs_to_apply, 7:], env_ids=envs_to_apply)
-                print(f"✅ Applied pose to envs: {envs_to_apply}")
-            except Exception as e:
-                print(f"❌ Pose application failed: {e}")
+        #     try:
+        #         self._robot.write_root_pose_to_sim(root_state[envs_to_apply, :7], env_ids=envs_to_apply)
+        #         self._robot.write_root_velocity_to_sim(root_state[envs_to_apply, 7:], env_ids=envs_to_apply)
+        #         print(f"✅ Applied pose to envs: {envs_to_apply}")
+        #     except Exception as e:
+        #         print(f"❌ Pose application failed: {e}")
 
 
 
@@ -573,7 +573,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # === Insertion logic ===
         slider_idx = self._robot.find_joints("holder_needle_slider")[0]
-        needle_step = 0.0002
+        needle_step = 0.02
 
         retracting = self.retracting[self.env_ids]
         self.robot_dof_targets[self.env_ids[~retracting], slider_idx] -= needle_step
