@@ -15,50 +15,9 @@ from isaaclab_tasks.direct.biopsy_skrl.biopsy_env import BiopsyDirectEnvCfg
 
 NUM_POSES = 10
 NUM_TRIALS = 5
-
+NUM_BINS = 16  # Number of bins per segment
 
 ###
-# Observation space as Dict & Action space as Box
-###
-
-
-@configclass
-class DictBoxEnvCfg(BiopsyDirectEnvCfg):
-    """
-    * Observation space (``~gymnasium.spaces.Dict`` with 2 constituent spaces)
-
-        ================  ===
-        Key               Observation
-        ================  ===
-        tooltip_pose      Box with shape (7,)  # x, y, z, qw, qx, qy, qz
-        raycaster         Point Cloud 
-        trial             Discrete with NUM_TRIALS elements
-        depth_tumor       Box with shape (1,)
-        # History of Previous Poses and their depth values
-        ================  ===
-
-    * Action space (``~gymnasium.spaces.Box`` with shape (1,))
-
-        ===                  ===
-        Idx                  Action
-        ===                  ===
-        Pose Offset          {X, Y, Z, W, X, Y, Z}
-        ===  ===
-    """
-
-    # spaces
-    observation_space = spaces.Dict({
-        "tooltip_position": spaces.Box(low=-np.inf, high=np.inf, shape=(3,)),  # x, y, z
-        "tooltip_quaternion": spaces.Box(low=-np.inf, high=np.inf, shape=(4,)),  # quaternion  qw, qx, qy, qz
-        "raycaster": spaces.Box(low=-np.inf, high=np.inf, shape=(64, 3)),  # raw PCD
-        #"trial": spaces.Discrete(NUM_TRIALS),
-        "depth_tumor": spaces.Box(low=0.0, high=float("inf"), shape=(1,)),
-        # History of Previous Poses and their depth values
-    })
-    # or for simplicity: {"joint-velocities": 2, "camera": [height, width, 3]}
-    action_space = spaces.Box(low=-0.0005, high=0.0005, shape=(2,))
-
-### 
 # Observation space as Dict & Action space as Discrete
 ###
 
@@ -82,7 +41,7 @@ class DictDiscreteEnvCfg(BiopsyDirectEnvCfg):
         ===      ===
         N        Action
         ===      ===
-        Pick     {P1, P2 .....Pn}
+        Twist    {0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5}
         ===      ===
     """
 
@@ -95,15 +54,15 @@ class DictDiscreteEnvCfg(BiopsyDirectEnvCfg):
         "depth_tumor": spaces.Box(low=0.0, high=float("inf"), shape=(1,)),
         # History of Previous Poses and their depth values
     })
-    # or for simplicity: {"joint-velocities": 2, "camera": [height, width, 3]}
-    action_space = spaces.Discrete(NUM_POSES)  # or for simplicity: {2}
+    action_space = spaces.Discrete(NUM_BINS)  # or for simplicity: {2}
 
 
 ###
 # Observation space as Dict & Action space as Dict {Box, Discrete}
 ###
+
 @configclass
-class DictMixedEnvCfg(BiopsyDirectEnvCfg):
+class DictMultiDiscreteEnvCfg(BiopsyDirectEnvCfg):
     """
     * Observation space (``~gymnasium.spaces.Dict`` with 2 constituent spaces)
 
@@ -117,13 +76,13 @@ class DictMixedEnvCfg(BiopsyDirectEnvCfg):
         # History of Previous Poses and their depth values
         ================  ===
 
-    * Action space (``~gymnasium.spaces.Dict`` with 2 constituent spaces)
+    * Action space (``~gymnasium.spaces.MultiDiscrete`` with 2 constituent spaces)
 
         ==================  ===
         Key                  Action
         ==================  ===
-        Pick               {P1, P2 .....Pn}
-        Pose Offset        {X, Y, Z, W, X, Y, Z}
+        Insertion           {0.01, 0.02, 0.03}
+        Twist               {0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180, 202.5, 225, 247.5, 270, 292.5, 315, 337.5}
         ==================  ===
     """
 
@@ -136,9 +95,4 @@ class DictMixedEnvCfg(BiopsyDirectEnvCfg):
         "depth_tumor": spaces.Box(low=0.0, high=float("inf"), shape=(1,)),
         # History of Previous Poses and their depth values
     })
-    # or for simplicity: {"joint-velocities": 2, "camera": [height, width, 3]}
-    action_space = spaces.Dict({
-        "offset": spaces.Box(low=-1.0, high=1.0, shape=(6,)),  # or for simplicity: 1 or [1]
-        "pick": spaces.Discrete(NUM_POSES),  # or for simplicity: {2}
-    })
-    # or for simplicity: {"value": 1, "direction": 1}
+    action_space = spaces.MultiDiscrete([3, 16])
