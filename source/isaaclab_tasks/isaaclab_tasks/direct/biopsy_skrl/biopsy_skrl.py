@@ -6,7 +6,7 @@ from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.loaders.torch import load_isaaclab_env
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
-from skrl.models.torch import DeterministicMixin, GaussianMixin, Model, CategoricalMixin
+from skrl.models.torch import DeterministicMixin, GaussianMixin, Model, CategoricalMixin, MultiCategoricalMixin
 from skrl.resources.preprocessors.torch import RunningStandardScaler
 from skrl.resources.schedulers.torch import KLAdaptiveRL
 from skrl.trainers.torch import SequentialTrainer
@@ -14,8 +14,8 @@ from skrl.utils import set_seed
 from skrl.utils.spaces.torch import unflatten_tensorized_space  # https://skrl.readthedocs.io/en/latest/api/utils/spaces.html#skrl.utils.spaces.torch.unflatten_tensorized_space 
 from gymnasium import spaces
 # seed for reproducibility
-set_seed(42)  # e.g. `set_seed(42)` for fixed seed
-DEBUG = True  # Set to True to enable debug prints
+set_seed(42)  
+DEBUG = True  
 
 class PointNetExtractor(nn.Module):
     def __init__(self, point_channel=3, output_dim=256):
@@ -183,6 +183,63 @@ class DiscreteActionPolicy(CategoricalMixin, Model):
         return x, {}
 
 
+class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
+    def __init__(self, observation_space, action_space, device, unnormalized_log_prob=True, reduction="sum"):
+        Model.__init__(self, observation_space, action_space, device)
+        MultiCategoricalMixin.__init__(self, unnormalized_log_prob, reduction)
+        self.pointnet = PointNetExtractor(point_channel=3, output_dim=256)  # your observation must be [B, N, 3]
+        self.actor = nn.Sequential(
+            nn.Linear(264, 128),  # 256 from PointNet + 8 from other features
+            nn.ELU(),
+            nn.Linear(128, 64),
+            nn.ELU(),
+            nn.Linear(64, self.num_actions)
+        )
+
+    def compute(self, inputs, role):
+        states = inputs["states"]
+        #print("States keys:", states, len(states[0]))  # Debugging line to check available keys
+        states = unflatten_tensorized_space(self.observation_space, states)  # https://github.com/Toni-SM/skrl/discussions/205
+        #print("Unflattened states shape:", {k: v.shape for k, v in states.items()})  # Debugging line to check shapes
+        # Process raycaster point cloud [B, 64, 3]
+        pcd = states["raycaster"]
+        if pcd.ndim == 2:
+            pcd = pcd.unsqueeze(0)  # Ensure batch dimension exists
+
+        pointnet_features = self.pointnet(pcd)  # -> [B, 256]
+
+        # Other inputs (make sure all are [B, D])
+        depth_tumor = states["depth_tumor"]
+        if depth_tumor.ndim == 1:
+            depth_tumor = depth_tumor.unsqueeze(0)
+
+        tooltip_pos = states["tooltip_position"]
+        if tooltip_pos.ndim == 1:
+            tooltip_pos = tooltip_pos.unsqueeze(0)
+
+        tooltip_quat = states["tooltip_quaternion"]
+        if tooltip_quat.ndim == 1:
+            tooltip_quat = tooltip_quat.unsqueeze(0)
+
+        # trial = states["trial"]
+        # if trial.ndim == 0:
+        #     trial = trial.unsqueeze(0)
+        # one_hot_trial = F.one_hot(trial.long(), num_classes=5).float()
+
+        # Concatenate all features
+        other_features = torch.cat([depth_tumor, tooltip_pos, tooltip_quat], dim=-1)  # [B, 1 + 7 = 8]
+        x = torch.cat([pointnet_features, other_features], dim=-1)  # [B, 256 + 8]
+        if DEBUG:
+            print("Raycaster shape:", pcd.shape)  # Should be [B, 64, 3]
+            print(f"PointNet features: {pointnet_features.shape}")
+            print("Other features shapes:",depth_tumor.shape, tooltip_pos.shape, tooltip_quat.shape)  # Debug
+            print(f"Other features: {other_features.shape}")
+            print(f"Input to actor: {x.shape}")
+            print("Concatenated features shape:", x.shape)
+        x = self.actor(x)
+        return x, {}
+
+
 class ValueModel(DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device):
         Model.__init__(self, observation_space, action_space, device)
@@ -201,18 +258,18 @@ class ValueModel(DeterministicMixin, Model):
         return self.net(inputs["states"]), {}
 
 
-# load and wrap the Isaac Lab environment
-env = load_isaaclab_env(task_name="Isaac-Biopsy-Direct-Dict-Box-v0") #change here for different action space
+# load and wrap the Isaac Lab environment 
+env = load_isaaclab_env(task_name="Isaac-Biopsy-Direct-Dict-MultiDiscrete-v0")  # change here for different action space
 env = wrap_env(env)
 
 device = env.device
 if DEBUG:
     if isinstance(env.action_space, spaces.Discrete):
         print("Discrete action space detected, using CategoricalMixin")
-    elif isinstance(env.action_space, spaces.Box):
-        print("Continuous action space detected, using GaussianMixin")
-    elif isinstance(env.action_space, spaces.Dict):
-        print("Dict action space detected, using GaussianMixin for each action space")
+    elif isinstance(env.action_space, spaces.MultiDiscrete):
+        print("Continuous action space detected, using MultiCategoricalMixin")
+    else:
+        raise NotImplementedError("Unknown action space type - only Discrete and MultiDiscrete are supported for this Task")
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
 memory = RandomMemory(memory_size=16, num_envs=env.num_envs, device=device)
@@ -227,9 +284,9 @@ models = {}
 if isinstance(env.action_space, spaces.Discrete):
     print("Using CategoricalMixin for discrete action space")
     models["policy"] = DiscreteActionPolicy(env.observation_space, env.action_space, device)
-elif isinstance(env.action_space, spaces.Box):
-    print("Using GaussianMixin for Continuous action space")
-    models["policy"] = ContinouosActionPolicy(env.observation_space, env.action_space, device, clip_actions=False)
+elif isinstance(env.action_space, spaces.MultiDiscrete):
+    print("Using MultiCategoricalMixin for MultiDiscrete action space")
+    models["policy"] = MultiDiscreteActionPolicy(env.observation_space, env.action_space, device)
 
 models["value"] = ValueModel(env.observation_space, env.action_space, device)  # separate value model
 if DEBUG:
