@@ -49,7 +49,7 @@ from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 
 # Assets and actuators
-from isaaclab.assets import Articulation, AssetBaseCfg
+from isaaclab.assets import Articulation, AssetBaseCfg, RigidObject
 
 # Sensors and raycasters
 from isaaclab.sensors.ray_caster import (
@@ -58,13 +58,14 @@ from isaaclab.sensors.ray_caster import (
 
 # Spawning and asset management
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.assets import RigidObjectCfg
 
 # IsaacLab utilities
 from isaaclab.utils import configclass
 from isaaclab.utils.io import dump_pickle, load_pickle
 
 # Math utilities
-from isaaclab.utils.math import matrix_from_quat
+from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix
 
 # Visualization and markers
 from isaaclab.markers import VisualizationMarkers
@@ -73,8 +74,25 @@ from isaaclab.markers.config import FRAME_MARKER_CFG
 # Open3D for point cloud / mesh processing
 import open3d as o3d
 
-# IsaacLab asset presets
-from isaaclab_assets import UR5_CFG
+@torch.jit.script
+def linspace(start: torch.Tensor, stop: torch.Tensor, num: int):
+    """
+    Creates a tensor of shape [num, *start.shape] whose values are evenly spaced from start to end, inclusive.
+    Replicates but the multi-dimensional bahaviour of numpy.linspace in PyTorch.
+    """
+    # create a tensor of 'num' steps from 0 to 1
+    steps = torch.arange(num, dtype=torch.float32, device=start.device) / (num - 1)
+    
+    # reshape the 'steps' tensor to [-1, *([1]*start.ndim)] to allow for broadcastings
+    # - using 'steps.reshape([-1, *([1]*start.ndim)])' would be nice here but torchscript
+    #   "cannot statically infer the expected size of a list in this contex", hence the code below
+    for i in range(start.ndim):
+        steps = steps.unsqueeze(-1)
+    
+    # the output starts at 'start' and increments until 'stop' in each dimension
+    out = start[None] + steps*(stop - start)[None]
+    
+    return out
 
 @configclass
 class MinimalSceneCfg(InteractiveSceneCfg):
@@ -111,18 +129,22 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
-    # vessel_native = AssetBaseCfg(
-    #     prim_path="{ENV_REGEX_NS}/OVessel",
-    #     spawn=sim_utils.UsdFileCfg(
-    #         usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
-    #     ),
-    #     init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
-    # )
 
-    robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    needle = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/needle",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.002,
+            height=0.1,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
+            physics_material=sim_utils.RigidBodyMaterialCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
+    )
 
     raycast_camera_vessel = RayCasterCameraCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        prim_path="{ENV_REGEX_NS}/needle",
         mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
         update_period=0.1,
         offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
@@ -138,7 +160,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     )
 
     raycast_camera_tumor = RayCasterCameraCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        prim_path="{ENV_REGEX_NS}/needle",
         mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
         update_period=0.1,
         offset=RayCasterCameraCfg.OffsetCfg(pos=(-0.0012, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0), convention="world"),
@@ -154,7 +176,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     )
 
     raycast_vessel = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        prim_path="{ENV_REGEX_NS}/needle",
         update_period=1 / 60,
         offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.0), rot=(0, 0.0, 0.0, 1.0)),
         mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
@@ -167,7 +189,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     )
 
     raycast_tumor = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/needle_tool/tooltip",
+        prim_path="{ENV_REGEX_NS}/needle",
         update_period=1 / 60,
         offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.0), rot=(0, 0.0, 0.0, 1.0)),
         mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
@@ -215,7 +237,6 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     bonus_inside_tumor = 10.0
 
 
-
 class BiopsyDirectEnv(DirectRLEnv):
     """Direct RL environment for the biopsy task."""
     # pre-physics step calls
@@ -228,7 +249,6 @@ class BiopsyDirectEnv(DirectRLEnv):
     #   |-- _get_observations()
 
     cfg : BiopsyDirectEnvCfg
-    #preop : biopsy_preop.BiopsyPreop
 
     def __init__(self, cfg: BiopsyDirectEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -252,53 +272,29 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.dt = self.cfg.sim.dt * self.cfg.decimation
         self.cloner = GridCloner(spacing=self.cfg.scene.env_spacing)
         self.offsets, _ = self.cloner.get_clone_transforms(self.num_envs)
-        # create auxiliary variables for computing applied action, observations and rewards
-        self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
-        self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
-        omni.log.info(f"Robot DOF limits: {self.robot_dof_lower_limits}, {self.robot_dof_upper_limits}")
-        self.robot_dof_speed_scales = torch.ones_like(self.robot_dof_lower_limits)
-        self.robot_dof_speed_scales[self._robot.find_joints("holder_needle_slider")[0]] = 0.1
-        #self.preop = biopsy_preop.BiopsyPreop()
-        #self.preop.print_test()
-        self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
         stage = get_current_stage()
-        prim = stage.GetPrimAtPath("/World/envs/env_0/Robot/needle_tool/holder_link")
+        prim = stage.GetPrimAtPath("/World/envs/env_0/needle")
         omni.log.info(f"Prim: {prim}")
         omni.log.info(f"Is valid: {prim.IsValid()}")
-
-        holder_pose = get_env_local_pose(
-            self.scene.env_origins[0],
-            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/needle_tool/holder_link")),
-            self.device,
-        )
-        tooltip_pose = get_env_local_pose(
-            self.scene.env_origins[0],
-            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/needle_tool/tooltip")),
-            self.device,
-        )
-        needle_pose = get_env_local_pose(
-            self.scene.env_origins[0],
-            UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/Robot/needle_tool/needle_link")),
-            self.device,
-        )
-        omni.log.info(f"POSEs: {holder_pose, tooltip_pose, needle_pose}")
-        self.tooltip_index = self._robot.find_bodies("tooltip")[0][0]
-        self.holder_index = self._robot.find_bodies("holder_link")[0][0]
-        self.needle_index = self._robot.find_bodies("needle_link")[0][0]
-        omni.log.info(f"Link Indices: {self.tooltip_index, self.holder_index, self.needle_index}")
-        self.active_path_idx = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)
-        omni.log.info(f"Robot Tool Tip Position before extension: {self._robot.data.body_pos_w[:, self.tooltip_index]}")
-        # Extend the needle for checking if raycast camera hits the tumor
-        joint_pos, joint_vel = self._robot.data.default_joint_pos.clone(), self._robot.data.default_joint_vel.clone()
-        joint_pos[:, 0] = -0.0
-        joint_vel[:] = 0.0
-        self._robot.write_joint_state_to_sim(joint_pos, joint_vel)
-        self._robot.set_joint_position_target(joint_pos)
-        self._robot.write_data_to_sim()
-        print(f"Robot Tool Tip Position: {self._robot.data.body_pos_w[:, self.tooltip_index]}")
         #self.draw = _debug_draw.acquire_debug_draw_interface()
-        self.TUMOR_REACH_THRESHOLD = 0.0075  # Threshold for considering the tumor reached
-        self.DIST_THRESHOLD = 0.005
+        try:
+            self.U1 = torch.tensor(0.01, device=self.device, dtype=torch.float32)  # mm/s
+            self.U2 = torch.tensor(0.1, device=self.device, dtype=torch.float32)  # mm/s
+            self.REB = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
+            self.PHI_Deg = torch.tensor(30, device=self.device, dtype=torch.float32)  # degrees
+            self.PHI_Rad = torch.deg2rad(self.PHI_Deg)  # radians
+            self.CURV = torch.tensor(0.2, device=self.device, dtype=torch.float32)  # mm
+            self.dt_steer = torch.tensor(0.5, device=self.device, dtype=torch.float32)  # seconds
+            self.INSERTION_DEPTH = torch.tensor(0.05, device=self.device, dtype=torch.float32)  # mm
+            self.TUMOR_REACH_THRESHOLD = torch.tensor(0.0075, device=self.device, dtype=torch.float32)  # mm
+            self.DIST_THRESHOLD = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
+        except Exception as e:
+            print("Error initializing constants:", e)
+
+        self.insertion_lookup_table = {0: self.INSERTION_DEPTH, 1: self.INSERTION_DEPTH + 0.01, 2: self.INSERTION_DEPTH + 0.02}
+        self.twist_lookup_table = {
+            0: 0.0, 1: 22.5, 2: 45.0, 3: 67.5, 4: 90.0, 5: 112.5, 6: 135.0, 7: 157.5, 8: 180.0, 9: 202.5, 10: 225.0, 11: 247.5, 12: 270.0, 13: 292.5, 14: 315.0, 15: 337.5
+        }
         # read pickled data
         omni.log.info("Loading tumor data...")
         self.tumor_positions = []
@@ -357,6 +353,23 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.tooltip_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.tumor = self.scene["tumor"]
 
+        # Set needle to start position for each environment from pickle data
+        for env_id in range(self.num_envs):
+            try:
+                root_state = self.scene["needle"].data.root_state_w.clone()
+                print(f"Root state before setting start position for env {env_id}: {root_state}")
+                start_pose = self.start_positions[env_id][0]  # Use the first start pose for each environment
+                start_quat = self.start_quaternions[env_id][0]  # Use the first start quaternion for each environment
+                root_state[:, :3] = torch.tensor(start_pose, device=self.device, dtype=torch.float32)
+                root_state[:, 3:7] = torch.tensor(start_quat, device=self.device, dtype=torch.float32)
+                print(f"Setting needle to start position for env {env_id}: {start_pose}, {start_quat}")
+                print(f"Root state to sim: {root_state}")
+                self.scene["needle"].write_root_pose_to_sim(root_state[:, :7])
+                self.scene["needle"].reset()
+                print("Write successful")
+            except Exception as e:
+                print(f"[ERROR] Failed to set needle position for env {env_id}: {e}")
+
         # Sensors
         self.raycast_cam_tumor = self.scene["raycast_camera_tumor"]
         self.raycast_cam_vessel = self.scene["raycast_camera_vessel"]
@@ -406,7 +419,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.delta_pos = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
         self.current_quat = torch.zeros((self.num_envs, 4), dtype=torch.float32, device=self.device)
         self.orientation_offset = torch.tensor([[1.0, 0.0, 0.0, 0.0]] * self.num_envs, dtype=torch.float32, device=self.device)
-        print("📌 BINDING OF _reset_idx:", self._reset_idx)
+        #print("📌 BINDING OF _reset_idx:", self._reset_idx)
 
         self.pose_applied = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.trial_phase = ["preop"] * self.num_envs
@@ -424,8 +437,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         To add new assets to the scene, use the `scene` attribute of the environment.
         refer https://forums.developer.nvidia.com/t/importing-scene-created-in-isaac-sim-to-isaac-lab/315590
         """
-        self._robot = Articulation(self.cfg.scene.robot)
-        self.scene.articulations["robot"] = self._robot
+        self._needle = self.scene["needle"]
 
     def _pre_physics_step(self, actions: torch.Tensor):
         """
@@ -433,277 +445,91 @@ class BiopsyDirectEnv(DirectRLEnv):
         - actions[:, :3]: delta position (x, y, z)
         - orientation remains fixed to preop base orientation
         """
-        self.actions = actions.clone()  # Store the actions for later use
-        low = torch.tensor(self.single_action_space.low, device=self.device)
-        high = torch.tensor(self.single_action_space.high, device=self.device)
-        print(f"Picked actions: {self.actions}")
-        # Scale action values to the range of the action space from [-1, 1] to [low, high] using the formula:
-        # scaled_action = ((x-a)/(b-a)) * (d-c) + c where x belongs to [a, b] and scaled_action belongs to [c, d]
-        # Here, a = -1, b = 1, c = low, d = high
-        a,b = -1, 1  # Action space range
-        # This scales the actions to the range [low, high]
-        self.actions = (((self.actions - a)/(b - a))*(high-low))+low  # Normalize actions to [-1, 1]
-        self.new_actions = 0.5 * (self.actions + 1.0) * (high - low) + low
-        #self.actions = torch.clamp(self.actions, low, high)
-        print("Simulation step:",self.sim)
-        print(f"Scaled actions: {self.actions}, {self.new_actions}")
+        self.actions = actions.clone() 
+        print(f"Actions received: {type(self.single_action_space)}")
+        if isinstance(self.single_action_space, Box):
+            low = torch.tensor(self.single_action_space.low, device=self.device)
+            high = torch.tensor(self.single_action_space.high, device=self.device)
+            print(f"Picked actions: {self.actions}")
+            # Scale action values to the range of the action space from [-1, 1] to [low, high] using the formula:
+            # scaled_action = ((x-a)/(b-a)) * (d-c) + c where x belongs to [a, b] and scaled_action belongs to [c, d]
+            # Here, a = -1, b = 1, c = low, d = high
+            a, b = -1, 1  # Action space range
+            # This scales the actions to the range [low, high]
+            self.actions = (((self.actions - a) / (b - a)) * (high - low)) + low  # Normalize actions to [-1, 1]
+            self.new_actions = 0.5 * (self.actions + 1.0) * (high - low) + low
+            # self.actions = torch.clamp(self.actions, low, high)
+            print(f"Scaled actions: {self.actions}, {self.new_actions}")
+        elif isinstance(self.single_action_space, gym.spaces.MultiDiscrete):
+            print(f"Picked actions (MultiDiscrete): {self.actions}")
+            insertion_bins = self.actions[:, 0]
+            twist_bins = self.actions[:, 1]
 
-        # actions = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
+            insertion_depths = torch.tensor(
+                [self.insertion_lookup_table[i.item()] for i in insertion_bins],
+                device=self.device,
+                dtype=torch.float32
+            )
+            twist_angles_deg = twist_bins.float() * 22.5
+            twist_angles_rad = torch.deg2rad(twist_angles_deg)
+            print(f"Insertion depths: {insertion_depths}")
+            print(f"Twist angles (deg): {twist_angles_deg}")
+            print(f"Twist angles (rad): {twist_angles_rad}")
 
-        # max_translation = self.cfg.action_scale
-        # delta_pos = torch.clamp(actions[:, :3], -max_translation, max_translation)
-
-        # self.current_pos = delta_pos  # (B, 3)
+            self.actions[:, 0] = insertion_depths
+            self.actions[:, 1] = twist_angles_rad
+            print(f"Updated actions: {self.actions}")
 
     def _apply_action(self):
-        omni.log.info(f"Applying action for {self.num_envs} environments.")
-        omni.log.info(f"Type of single action space: {type(self.single_action_space)}")
-        offsets = self.scene.env_origins[self.env_ids]
+        root_state = self._needle.data.root_state_w.clone()  # [num_envs, 13]
+        new_root_state = root_state.clone()
+        for env_id in range(self.num_envs):
+            # Extract current pose
+            pos = root_state[env_id, :3]
+            quat = root_state[env_id, 3:7]
+            rot = matrix_from_quat(quat.unsqueeze(0)).squeeze(0)  # [3, 3]
+            current_pose = torch.eye(4, device=self.device)
+            current_pose[:3, :3] = rot
+            current_pose[:3, 3] = pos
+            # Discretize path for rebound correction
+            prior_path = self.discretize_preop_path(
+                self.start_positions[env_id], self.tumor_centroids[env_id]
+            )
+            # Apply agent's action
+            insertion_depth = self.actions[env_id, 0]
+            twist_angle_rad = self.actions[env_id, 1]
+            next_pose = self.generate_needle_step_with_rebound(
+                current_pose=current_pose,
+                insertion_depth=insertion_depth,
+                twist_angle_rad=twist_angle_rad,
+                prior_path=prior_path
+            )
+            # Decompose next pose
+            new_pos = next_pose[:3, 3]
+            new_rot = next_pose[:3, :3]
+            new_quat = quat_from_matrix(new_rot.cpu().numpy())  # [x, y, z, w] → convert to [w, x, y, z]
+            new_quat = torch.tensor([new_quat[3], *new_quat[:3]], device=self.device)  # [w, x, y, z]
 
-        if isinstance(self.single_action_space, gym.spaces.Box):
-            print(f"Applying Box action with shape {self.actions.shape} and scale {self.cfg.action_scale}")
-            tooltip_pos = self._robot.data.body_pos_w[self.env_ids, self.tooltip_index]  # (B, 3)
-            tooltip_quat = self._robot.data.body_quat_w[self.env_ids, self.tooltip_index]  # (B, 4)
-            print(f"Current tooltip position: {tooltip_pos}, current quaternion: {tooltip_quat}")
-            delta_pos = self.actions[:, :2] # (B, 2)
-            new_pos = tooltip_pos.clone()
-            new_pos[:, 0] += delta_pos[:, 0]  # Update x
-            new_pos[:, 2] += delta_pos[:, 1]  # Update y
-            print(f"New pos: {new_pos}")
+            new_root_state[env_id, :3] = new_pos
+            new_root_state[env_id, 3:7] = new_quat
 
-            new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(tooltip_quat, new_pos, preserve_orientation=True)
-            root_state = self._robot.data.default_root_state.clone()
-            root_state[self.env_ids, :3] = new_holder_pos #+ offsets[self.env_ids]
-            root_state[self.env_ids, 3:7] = new_holder_quat
-            root_state[self.env_ids, 7:] = 0.0
-            self.pose_applied[self.env_ids] = True  # Lock pose application
-            try:
-                self._robot.write_root_pose_to_sim(root_state[self.env_ids, :7], env_ids=self.env_ids)
-                self._robot.write_root_velocity_to_sim(root_state[self.env_ids, 7:], env_ids=self.env_ids)
-                print(f"Applied new pose to envs: {self.env_ids}, pos: {new_holder_pos}, quat: {new_holder_quat}")
-            except Exception as e:
-                print(f"Pose application failed due to: {e}")
-                traceback.print_exc()
-        
-        # NOT WORKING
-        # if isinstance(self.single_action_space, gym.spaces.Box):
-        #     envs_to_apply = self.env_ids[~self.pose_applied[self.env_ids]]
-        #     if envs_to_apply.numel() == 0:
-        #         return
+        self._needle.write_root_pose_to_sim(new_root_state[:, :7])
+        self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
+        self._needle.reset()
 
-        #     tooltip_pos = self._robot.data.body_pos_w[envs_to_apply, self.tooltip_index]
-        #     tooltip_quat = self._robot.data.body_quat_w[envs_to_apply, self.tooltip_index]
-        #     delta_pos = self.actions[envs_to_apply, :2]
-
-        #     new_pos = tooltip_pos.clone()
-        #     new_pos[:, 0] += delta_pos[:, 0]
-        #     new_pos[:, 2] += delta_pos[:, 1]
-
-        #     new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(
-        #         tooltip_quat, new_pos, preserve_orientation=True
-        #     )
-
-        #     root_state = self._robot.data.default_root_state.clone()
-        #     root_state[envs_to_apply, :3] = new_holder_pos
-        #     root_state[envs_to_apply, 3:7] = new_holder_quat
-        #     root_state[envs_to_apply, 7:] = 0.0
-        #     self.pose_applied[envs_to_apply] = True
-
-        #     try:
-        #         self._robot.write_root_pose_to_sim(root_state[envs_to_apply, :7], env_ids=envs_to_apply)
-        #         self._robot.write_root_velocity_to_sim(root_state[envs_to_apply, 7:], env_ids=envs_to_apply)
-        #         print(f"✅ Applied pose to envs: {envs_to_apply}")
-        #     except Exception as e:
-        #         print(f"❌ Pose application failed: {e}")
-
-
-
-
-            # for i, env_id in enumerate(self.env_ids):
-            #     if not self.pose_applied[env_id]:  # 🔒 Guard
-            #         print(f"[env {env_id}] Applying action for env {env_id}")
-            #         tooltip_pos = self._robot.data.body_pos_w[env_id, self.tooltip_index]
-            #         tooltip_quat = self._robot.data.body_quat_w[env_id, self.tooltip_index]
-            #         delta_pos = self.actions[env_id, :2]
-            #         print(f"[env {env_id}] Tooltip pos: {tooltip_pos}, quat: {tooltip_quat}, delta_pos: {delta_pos}")
-            #         new_pos = tooltip_pos.clone()
-            #         new_pos[0] += delta_pos[0]
-            #         new_pos[2] += delta_pos[1]
-            #         print(f"[env {env_id}] New pos: {new_pos}")
-            #         tooltip_quat = tooltip_quat.unsqueeze(0) if tooltip_quat.ndim == 1 else tooltip_quat
-            #         new_pos = new_pos.unsqueeze(0) if new_pos.ndim == 1 else new_pos
-            #         tooltip_quat = tooltip_quat.unsqueeze(0) if tooltip_quat.ndim == 1 else tooltip_quat
-            #         new_pos = new_pos.unsqueeze(0) if new_pos.ndim == 1 else new_pos
-
-            #         new_holder_quat, new_holder_pos = self.tooltip_to_holder_preserve(
-            #             tooltip_quat, new_pos, preserve_orientation=True
-            #         )
-
-            #         new_holder_quat = new_holder_quat.squeeze(0)
-            #         new_holder_pos = new_holder_pos.squeeze(0)
-
-            #         offset = self.scene.env_origins[env_id]
-            #         root_state = self._robot.data.default_root_state.clone()
-            #         root_state[env_id, :3] = new_holder_pos + offset
-            #         root_state[env_id, 3:7] = new_holder_quat
-            #         root_state[env_id, 7:] = 0.0
-
-            #         try:
-            #             self._robot.write_root_pose_to_sim(root_state[env_id, :7].unsqueeze(0), env_ids=torch.tensor([env_id], device=self.device))
-            #             self._robot.write_root_velocity_to_sim(root_state[env_id, 7:].unsqueeze(0), env_ids=torch.tensor([env_id], device=self.device))
-            #             self.pose_applied[env_id] = True  # ✅ Lock motion after one move
-            #             print(f"[env {env_id}] Pose applied.")
-            #         except Exception as e:
-            #             print(f"[env {env_id}] Pose application failed: {e}")
-
-        elif isinstance(self.single_action_space, gym.spaces.Discrete):
-            for i in range(self.num_envs):
-                env_id = self.env_ids[i]
-
-                # Apply pose only if not already applied
-                if not self.pose_applied[env_id]:
-                    action_index = self.actions[env_id, 0].item()
-                    print(f"Env {env_id} - Chosen action index: {action_index}")
-
-                    pose = self.start_poses[env_id, action_index]
-                    quat, pos = self.tooltip_to_holder(pose[3:], pose[:3])
-                    print(f"Env {env_id} - Tooltip pos: {pos}, quat: {quat}")
-
-                    self.pos_tensor[env_id] = pos
-                    self.quat_tensor[env_id] = quat
-                    self.pose_applied[env_id] = True  # Lock pose application
-
-            # Apply updated poses only to those that were changed
-            selected_envs = self.env_ids[self.pose_applied[self.env_ids]]
-            if selected_envs.numel() > 0:
-                root_state = self._robot.data.default_root_state.clone()
-                omni.log.info(f"Root state before applying pose:{root_state[selected_envs, :]}" )
-                omni.log.info(f"Offsets: {offsets[selected_envs]}")
-                omni.log.info(f"Type of offsets: {type(offsets[selected_envs])}, shape: {offsets[selected_envs].shape}, dtype: {offsets[selected_envs].dtype}")
-                omni.log.info(f"Type of pos_tensor: {type(self.pos_tensor[selected_envs])}, shape: {self.pos_tensor[selected_envs].shape}, dtype: {self.pos_tensor[selected_envs].dtype}")
-                print(f"Pose being appllied to envs: {selected_envs}, pos_tensor: {self.pos_tensor[selected_envs]}, quat_tensor: {self.quat_tensor[selected_envs]}")
-                root_state[selected_envs, :3] = self.pos_tensor[selected_envs].to(dtype=torch.float32) + offsets[selected_envs]
-                root_state[selected_envs, 3:7] = self.quat_tensor[selected_envs].to(dtype=torch.float32)
-                root_state[selected_envs, 7:] = 0.0  # Reset velocity
-
-                try:
-                    self._robot.write_root_pose_to_sim(root_state[selected_envs, :7], env_ids=selected_envs)
-                    self._robot.write_root_velocity_to_sim(root_state[selected_envs, 7:], env_ids=selected_envs)
-                    print(f"Applied pose to envs: {selected_envs}")
-                except Exception as e:
-                    print(f"Pose application failed due to: {e}")
-                    traceback.print_exc()
-
-        elif isinstance(self.single_action_space, Dict):
-            pass
-
-        # === Insertion logic ===
-        slider_idx = self._robot.find_joints("holder_needle_slider")[0]
-        needle_step = 0.02
-
-        retracting = self.retracting[self.env_ids]
-        self.robot_dof_targets[self.env_ids[~retracting], slider_idx] -= needle_step
-        self.robot_dof_targets[self.env_ids[retracting], slider_idx] += 2 * needle_step
-
-        # === Phase switching and insertion completion ===
-        depths = self.robot_dof_targets[self.env_ids, slider_idx]
-        for i, env_id in enumerate(self.env_ids):
-            if depths[i] <= -0.09:
-                if self.trial_phase[env_id] == "preop":
-                    self.trial_phase[env_id] = "rl"
-                    self.pose_applied[env_id] = False  # Unlock for next pose
-                    self.robot_dof_targets[env_id, slider_idx] = 0.0  # Reset depth
-                    self.retracting[env_id] = True
-                else:
-                    self.trial_done[env_id] = True
-
-            if self.retracting[env_id] and depths[i] >= 0.0:
-                self.retracting[env_id] = False
-        print("Phase switching and insertion logic applied.")
-        self._robot.set_joint_position_target(self.robot_dof_targets)
+        # Apply the action to the robot    
 
     def _compute_intermediate_values(self, env_ids):
         """
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
         and the observations to be returned to the agent.
         """
-        if env_ids is None:
-            env_ids = self._robot._ALL_INDICES
-        
-        self.tool_tip_pos = self._robot.data.body_pos_w[env_ids, self.tooltip_index]
-        self.tool_tip_quat = self._robot.data.body_quat_w[env_ids, self.tooltip_index]
-        #self.potentials, self.prev_potentials = self.compute_intermediate_values(env_ids, self.tool_tip_pos, self.shuffled_tumor_centroids, self.prev_potentials)
-        self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(self.tool_tip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
+        self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(self.tooltip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
 
     def _reset_idx(self, env_ids):
         """
-            A) Randomly select a tumor centroid from the list of centroids
-            B) Randomly select a start pose from the list of start poses based on the selected centroid
-            C) Set tooltip position and rotation to the start pose
-            D) Set the robot joint positions to the start pose
-            E) Set the robot joint velocities to zero
-            F) Save the active path index per environment
+        Reset the environment index.
         """
-        print(f"CUSTOM RESET IDX CALLED for envs: {env_ids}")
-        env_ids = torch.tensor(env_ids, device=self.device)  # ensure tensor
-
-        if (env_ids >= self.num_envs).any():
-            print(f"Invalid env ID detected: {env_ids}")
-            env_ids = env_ids[env_ids < self.num_envs]  # clip if needed
-
-        super()._reset_idx(env_ids)
-        if isinstance(self.single_action_space, gym.spaces.Discrete):
-            omni.log.info(f"Env ID: {env_ids}, {type(env_ids)}")
-            print(f"Resetting environments with IDs: {env_ids}")
-            # Reset pose application status
-            self.pose_applied[env_ids] = False  
-            # Update eef tooltip joint position and rotation to zero
-            slider_idx = self._robot.find_joints("holder_needle_slider")[0]
-            self.robot_dof_targets[env_ids, slider_idx] = 0.0
-            # Brain Shift 
-            try:
-                print(f"Getting vessel points for envs: {env_ids}")
-                self.get_vessel_points()
-            except Exception as e:
-                print(f"Failed to get vessel points: {e}")
-                traceback.print_exc()
-        #self._robot.set_joint_position_target(self.robot_dof_targets)
-        elif isinstance(self.single_action_space, gym.spaces.Box):
-            print(f"Resetting environments with IDs: {env_ids}")
-            # Reset pose application status
-            self.pose_applied[env_ids] = False  
-            # Update eef tooltip joint position and rotation to zero
-            slider_idx = self._robot.find_joints("holder_needle_slider")[0]
-            self.robot_dof_targets[env_ids, slider_idx] = 0.0
-            # # Brain Shift 
-            # try:
-            #     print(f"Getting vessel points for envs: {env_ids}")
-            #     self.get_vessel_points()
-            # except Exception as e:
-            #     print(f"Failed to get vessel points: {e}")
-            #     traceback.print_exc()
-            root_state = self._robot.data.default_root_state.clone()
-            for env_id in env_ids:
-                print("Resetting environments with IDs:", env_id)
-                env_id = int(env_id)
-                offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
-                self.trial_phase[env_id] = "preop"
-                self.trial_done[env_id] = False
-                self.pose_applied[env_id] = False
-                tumor_data = self.tumor_pickle[env_id]
-                path_idx = random.randint(0, len(tumor_data["start_pose"]) - 1)
-                start_pose = tumor_data["start_pose"][path_idx]
-                start_pos = start_pose["position"].to(self.device) + offset
-                start_quat = start_pose["quaternion"].to(self.device)
-                ttip_quat, ttip_pos = self.tooltip_to_holder(start_quat, start_pos)
-                root_state[env_id, :3] = ttip_pos
-                root_state[env_id, 3:7] = ttip_quat
-                root_state[env_id, 7:] = 0.0 
-                self.active_path_idx[env_id] = path_idx
-                print(f"[env {env_id}] Using path index {path_idx} for tumor at {tumor_data['tumor_position']}")
-            self._robot.write_root_pose_to_sim(root_state[env_ids, :7], env_ids=env_ids)
-            self._robot.write_root_velocity_to_sim(root_state[env_ids, 7:], env_ids=env_ids)
-        
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         self._compute_intermediate_values(env_ids)
 
@@ -720,7 +546,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         tumor_reached = distances <= self.TUMOR_REACH_THRESHOLD
         for i in range(min(5, self.num_envs)):
             print(f"[env {i}] distance: {distances[i].item():.4f} | reached: {tumor_reached[i].item()}")
-        #dummy_dones = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         print(f"[DEBUG] episode_length_buf[:5]: {self.episode_length_buf[:5]}")
         print(f"[DEBUG] max_episode_length: {self.max_episode_length}")
@@ -738,8 +563,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         ~ One-hot encoding of active path index
         """
         # --- Core kinematics ---
-        self.tool_tip_pos = self._robot.data.body_pos_w[:, self.tooltip_index]  # [B, 3]
-        self.tooltip_rot = self._robot.data.body_quat_w[:, self.tooltip_index]  # [B, 4]
+        self.tool_tip_pos = None
+        self.tool_tip_rot = None  # [B, 4]
 
         # --- Tumor geometry ---
         # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
@@ -785,8 +610,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         # --- One-hot encoding for active path index ---
         #path_one_hot = torch.nn.functional.one_hot(self.active_path_idx, num_classes=3).float()  # [B, 3]
 
-        obs = {"tooltip_position": self.tool_tip_pos, "tooltip_quaternion": self.tooltip_rot, "raycaster": pcd_vessels, "depth_tumor": depth_to_tumor}  # "trial": try_history, 
+        obs = {"tooltip_position": self.tooltip_pos, "tooltip_quaternion": self.tooltip_rot, "raycaster": pcd_vessels, "depth_tumor": depth_to_tumor}  # "trial": try_history, 
         for k, v in obs.items():
+            print(f"Observation {k}: {v}, type: {type(v)}")
             print(f"{k}: {v.shape}")
 
         return {"policy": obs}
@@ -842,107 +668,91 @@ class BiopsyDirectEnv(DirectRLEnv):
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
     # ## --------------------------------------- ## #
-    def tooltip_to_holder_preserve(self, start_quat, start_pos, preserve_orientation: bool = False):
-        is_batched = len(start_quat.shape) == 2
 
-        if not is_batched:
-            start_quat = start_quat.unsqueeze(0)
-            start_pos = start_pos.unsqueeze(0)
+    def discretize_preop_path(self, start_pose, tumor_centroid, num_points=100):
+        """
+        Generate a discretized path from the start pose to the tumor centroid.
+        """
+        print(f"Discretizing path from start pose {start_pose[0]} to tumor centroid {tumor_centroid}")
+        start_pos = start_pose[0].to(dtype=torch.float32, device=self.device)
+        end_pos = torch.tensor([tumor_centroid], dtype=torch.float32, device=self.device)
+        print(f"Shape of start_pos: {start_pos.shape}, Shape of end_pos: {end_pos.squeeze().shape}")
+        print(f"Start position: {start_pos}, End position: {end_pos.squeeze()}")
+        print(f"Type of start_pos: {start_pos.dtype}, Type of end_pos: {end_pos.dtype}")
+        path = linspace(start_pos, end_pos.squeeze(), num_points)  # torch.linspace only accepts 1D tensors hence refer to https://github.com/pytorch/pytorch/issues/61292, TorchScript does not support self in scripted functions — it expects a pure function, not a method of a class.
+        path_poses = torch.eye(4, device=self.device).repeat(num_points, 1, 1)
+        path_poses[:, :3, 3] = path
+        return path_poses
+    
+    def twist_to_matrix(self, v, w):
+        mat = torch.zeros((4, 4), device=self.device, dtype=torch.float32)
+        mat[:3, :3] = skew_symmetric_matrix(w)
+        mat[:3, 3] = v
+        return mat
 
-        start_quat = start_quat.to(dtype=torch.float32)
-        start_pos = start_pos.to(dtype=torch.float32)
-        batch_size = start_quat.shape[0]
+    def generate_needle_step_with_rebound(
+        self,
+        current_pose: torch.Tensor,            # SE(3), shape (4, 4)
+        insertion_depth: float,                # mm
+        twist_angle_rad: float,                # radians
+        prior_path: torch.Tensor,              # shape (N, 4, 4)
+        threshold_deg: float = 10.0            # deviation threshold in degrees
+    ) -> torch.Tensor:
+        """
+        Apply one SE(3) twist-based step with optional rebound correction toward a soft path prior.
 
-        # Offset from tooltip to holder
-        tooltip_to_holder_pos = torch.tensor(
-            [0.02464, -0.00005, -0.0265], dtype=torch.float32, device=self.device
-        ).expand(batch_size, -1)
+        Returns:
+            torch.Tensor: Updated SE(3) pose (4x4)
+        """
+        phi = torch.deg2rad(torch.tensor(self.PHI_Deg, device=self.device, dtype=torch.float32))
+        u2 = twist_angle_rad  # twist around needle axis (z)
 
-        # Rotation between tooltip and holder
-        if preserve_orientation:
-            tooltip_to_holder_quat = torch.tensor(
-                [1.0, 0.0, 0.0, 0.0],  # Identity quaternion — no rotation
-                dtype=torch.float32, device=self.device
-            ).expand(batch_size, -1)
+        # Twist kinematics
+        v = torch.tensor([0, -insertion_depth * torch.sin(phi), insertion_depth * torch.cos(phi)], device=self.device)
+        w = torch.tensor([insertion_depth / self.CURV, 0, u2], device=self.device)
+        xi_hat = self.twist_to_matrix(v, w)
+
+        # Find nearest point on prior path
+        tip_pos = current_pose[:3, 3]
+        prior_positions = prior_path[:, :3, 3]
+        dists = torch.norm(prior_positions - tip_pos, dim=1)
+        target_idx = torch.argmin(dists)
+        target_pose = prior_path[target_idx]
+
+        # Compute deviation angle
+        current_dir = current_pose[:3, 2]
+        to_target = target_pose[:3, 3] - tip_pos
+        to_target = to_target / torch.norm(to_target)
+        angle_diff = torch.acos(torch.clamp(torch.dot(current_dir, to_target), -1.0, 1.0))
+
+        threshold_rad = torch.deg2rad(torch.tensor(threshold_deg, device=self.device))
+
+        if angle_diff > threshold_rad:
+            # Rebound correction
+            t_mod = self.REB / insertion_depth
+            g_partial = current_pose @ torch.linalg.matrix_exp(xi_hat * (1.0 - t_mod))
+
+            # Small forward translation along z-axis
+            z_axis = g_partial[:3, 2]
+            trans = torch.eye(4, device=self.device)
+            trans[:3, 3] = z_axis * self.REB
+
+            # Rotation to realign
+            theta = torch.atan2(to_target[1], to_target[0]) - torch.atan2(z_axis[1], z_axis[0])
+            rot_z = torch.eye(4, device=self.device)
+            rot_z[:3, :3] = torch.tensor([
+                [torch.cos(theta), -torch.sin(theta), 0],
+                [torch.sin(theta),  torch.cos(theta), 0],
+                [0,                0,                 1]
+            ], device=self.device)
+
+            next_pose = g_partial @ trans @ rot_z
         else:
-            tooltip_to_holder_quat = torch.tensor(
-                R.from_euler("xyz", [0, 0, 1.5707]).as_quat(canonical=False),
-                dtype=torch.float32, device=self.device
-            ).expand(batch_size, -1)
+            # Normal forward twist motion
+            next_pose = current_pose @ torch.linalg.matrix_exp(xi_hat)
 
-        # Invert tooltip→holder to get holder→tooltip
-        holder_to_tooltip_quat, holder_to_tooltip_pos = tf_inverse(
-            tooltip_to_holder_quat, tooltip_to_holder_pos
-        )
+        return next_pose
 
-        # Move tooltip slightly forward if needed
-        closer_distance = 0.0025
-        tooltip_forward_offset = torch.tensor(
-            [0.0, -closer_distance, 0.0], dtype=torch.float32, device=self.device
-        ).expand(batch_size, -1).unsqueeze(-1)
-
-        tooltip_rot_matrix = matrix_from_quat(start_quat)
-        world_offset = torch.bmm(tooltip_rot_matrix, tooltip_forward_offset).squeeze(-1)
-        start_pos = start_pos + world_offset
-
-        # Combine to get final holder transform
-        holder_quat, holder_pos = tf_combine(
-            start_quat, start_pos, holder_to_tooltip_quat, holder_to_tooltip_pos
-        )
-
-        if not is_batched:
-            return holder_quat.squeeze(0), holder_pos.squeeze(0)
-        return holder_quat, holder_pos
-
-
-    def tooltip_to_holder(self, start_quat, start_pos):
-        is_batched = len(start_quat.shape) == 2
-
-        if not is_batched:
-            start_quat = start_quat.unsqueeze(0)
-            start_pos = start_pos.unsqueeze(0)
-
-        start_quat = start_quat.to(dtype=torch.float32)
-        start_pos = start_pos.to(dtype=torch.float32)
-
-        batch_size = start_quat.shape[0]
-
-        tooltip_to_holder_pos = torch.tensor(
-            [0.02464, -0.00005, -0.0265], dtype=torch.float32, device=self.device
-        ).expand(batch_size, -1)
-
-        tooltip_to_holder_quat = torch.tensor(
-            R.from_euler("xyz", [0, 0, 1.5707]).as_quat(canonical=False),
-            dtype=torch.float32, device=self.device
-        ).expand(batch_size, -1)
-
-        holder_to_tooltip_quat, holder_to_tooltip_pos = tf_inverse(
-            tooltip_to_holder_quat, tooltip_to_holder_pos
-        )
-        batch_size = start_quat.shape[0]
-        closer_distance = 0.0025  # Distance to move the tooltip forward
-        # Define offset vector and expand for batch
-        tooltip_forward_offset = torch.tensor(
-            [0.0, -closer_distance, 0.0],
-            dtype=torch.float32, device=self.device
-        ).expand(batch_size, -1).unsqueeze(-1)  # shape: (B, 3, 1)
-
-        # Convert quaternion to rotation matrix
-        tooltip_rot_matrix = matrix_from_quat(start_quat)  # shape: (B, 3, 3)
-
-        # Compute world-space offset
-        world_offset = torch.bmm(tooltip_rot_matrix, tooltip_forward_offset).squeeze(-1)  # shape: (B, 3)
-
-        # Apply to start_pos
-        start_pos = start_pos + world_offset
-
-        holder_quat, holder_pos = tf_combine(
-            start_quat, start_pos, holder_to_tooltip_quat, holder_to_tooltip_pos
-        )
-
-        if not is_batched:
-            return holder_quat.squeeze(0), holder_pos.squeeze(0)
-        return holder_quat, holder_pos
 
     def set_tumor_positions(self):
         for env_id in self.env_ids:
@@ -1008,7 +818,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         proj_lengths = np.dot(vecs, axis)  # projection on axis (height direction)
         radial_vecs = vecs - np.outer(proj_lengths, axis)
         radial_dists = np.linalg.norm(radial_vecs, axis=1)
-
+        print(f"Radial distances: {radial_dists, }, Projection lengths: {proj_lengths}")
         # Condition: within radius and within height range
         mask = (proj_lengths >= -height / 2) & (proj_lengths <= height / 2) & (radial_dists <= radius)
         return hits_np[mask]
@@ -1019,12 +829,12 @@ class BiopsyDirectEnv(DirectRLEnv):
             hits_env = hits[env_id]  # shape (R, 3)
             valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
             valid_hits = hits_env[valid_mask]  # shape (V, 3)
-            tool_tip = self._robot.data.body_pos_w[:, self.tooltip_index]
+            tool_tip = torch.tensor([[0.0, 0.0, 0.0]])  # Fill with dummy
             needle_center = tool_tip[env_id].cpu().numpy()
             # Assuming the tool's orientation provides the correct insertion axis
-            insertion_axis = self._robot.data.body_quat_w[:, self.tooltip_index]  # This should be the rotation (orientation) of the tool
+            insertion_axis = torch.tensor([[1.0, 0.0, 0.0, 0.0]])  # Fill with dummy
             insertion_axis_np = insertion_axis[env_id].cpu().numpy()
-            axis = insertion_axis_np[1:]  # (x, y, z)
+            axis = insertion_axis_np[:3]  # (x, y, z)
             axis = axis / np.linalg.norm(axis)
             valid_hits_np = valid_hits.cpu().numpy()
             filtered_hits = self.filter_hits_in_cylinder(
@@ -1051,15 +861,16 @@ class BiopsyDirectEnv(DirectRLEnv):
             hits_env = hits[env_id]  # shape (R, 3)
             valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
             valid_hits = hits_env[valid_mask]  # shape (V, 3)
-            tool_tip = self._robot.data.body_pos_w[:, self.tooltip_index]
+            tool_tip = torch.tensor([[0.0, 0.0, 0.0]])  # Fill with dummy
             needle_center = tool_tip[env_id].cpu().numpy()
             # Assuming the tool's orientation provides the correct insertion axis
-            insertion_axis = self._robot.data.body_quat_w[:, self.tooltip_index]  # This should be the rotation (orientation) of the tool
+            insertion_axis = torch.tensor([[1.0, 0.0, 0.0, 0.0]])  # Fill with dummy  # This should be the rotation (orientation) of the tool
             insertion_axis_np = insertion_axis[env_id].cpu().numpy()
             omni.log.info(f"Type: {type(insertion_axis_np)}")
             omni.log.info(f"Insertion Axis: {insertion_axis_np}")
-            axis = insertion_axis_np[1:]  # (x, y, z)
+            axis = insertion_axis_np[:3]  # (x, y, z)
             axis = axis / np.linalg.norm(axis)
+            print(f"[env {env_id}] Needle center: {needle_center}, Axis: {axis}")
             omni.log.info(f"Axis:{type(axis)}")
             valid_hits_np = valid_hits.cpu().numpy()
             filtered_hits = self.filter_hits_in_cylinder(
