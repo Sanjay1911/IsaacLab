@@ -507,7 +507,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             # Decompose next pose
             new_pos = next_pose[:3, 3]
             new_rot = next_pose[:3, :3]
-            new_quat = quat_from_matrix(new_rot.cpu().numpy())  # [x, y, z, w] → convert to [w, x, y, z]
+            new_quat = quat_from_matrix(new_rot)  # [x, y, z, w] → convert to [w, x, y, z]
             new_quat = torch.tensor([new_quat[3], *new_quat[:3]], device=self.device)  # [w, x, y, z]
 
             new_root_state[env_id, :3] = new_pos
