@@ -69,7 +69,7 @@ insertion_depth = 0.05  # mm per segment
 num_bins = 16  # Number of bins per segment
 bin_angle_deg = 22.5  # Narrow bin angle
 bin_angle_rad = np.deg2rad(bin_angle_deg)
-num_steps = 50
+num_steps = 10
 
 U1 = torch.tensor(0.01, device=args_cli.device, dtype=torch.float32)  # mm/s
 U2 = torch.tensor(0.1, device=args_cli.device, dtype=torch.float32)  # mm/s
@@ -92,6 +92,33 @@ class SteerableSceneCfg(InteractiveSceneCfg):
         prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
+    # dummy object
+    tumor = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Tumor",
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj",
+            scale=(10, 10, 10)
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    )
+
+    vessel = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Vessel",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    )
+
+    tumor1 = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Tumor1",
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj",
+            scale=(1, 1, 1)
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    )
+
     # articulation
     needle: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/needle",
@@ -102,9 +129,55 @@ class SteerableSceneCfg(InteractiveSceneCfg):
             mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
             physics_material=sim_utils.RigidBodyMaterialCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True)
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
     )
+
+    needle11: RigidObjectCfg = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/needle11",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.2,
+            height=0.1,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
+            physics_material=sim_utils.RigidBodyMaterialCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True)
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.10, 0.0, 0.20)),
+    )
+
+    #raycaster 
+    raycast_camera_vessel = RayCasterCameraCfg(
+        prim_path="{ENV_REGEX_NS}/needle11",
+        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
+        update_period=0.1,
+        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.20), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
+        data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
+        debug_vis=True,
+        max_distance=0.2,
+        pattern_cfg=patterns.PinholeCameraPatternCfg(
+            focal_length=24.0,
+            horizontal_aperture=20.955,
+            height=420,
+            width=640,
+        ),
+    )
+
+    raycast_tumor = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/needle11",
+        update_period=1 / 60,
+        offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.20), rot=(0, 0.0, 0.0, 1.0)),
+        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
+        attach_yaw_only=True,
+        max_distance=0.2,
+        debug_vis=True,
+        pattern_cfg=patterns.LidarPatternCfg(
+            channels=50, vertical_fov_range=[-60, 60], horizontal_fov_range=[-20, 20], horizontal_res=1.0
+        )
+    )
+
 
 
 def draw_points(points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):
@@ -264,6 +337,17 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
     num_envs = scene.num_envs
     scene_origins = scene.env_origins
     robot = scene["needle"]
+    frame_marker_cfg = FRAME_MARKER_CFG.copy()
+    frame_marker_cfg.markers["frame"].scale = (0.005, 0.005, 0.005)
+    camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
+    raycaster = scene["raycast_camera_vessel"]
+    raycaster.update(dt=sim.get_physics_dt(), force_recompute=True)
+    raycast_sensor = scene["raycast_tumor"]
+    print(raycast_sensor)
+    # Print camera info
+    print(raycaster)
+    print("Received shape of depth image: ", raycaster.data.output["distance_to_image_plane"].shape)
+    print("-------------------------------")
     current_gravity_status = robot.root_physx_view.get_disable_gravities()   # https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/extensions/runtime/source/omni.physics.tensors/docs/api/python.html#omni.physics.tensors.impl.api.RigidBodyView.get_disable_gravities
     print("[INFO]: Current gravity status:", current_gravity_status, current_gravity_status[0])  
     if current_gravity_status[0] == 0:
@@ -321,6 +405,23 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
 
     count = 0
     while simulation_app.is_running():
+        distances = raycaster.data.output["distance_to_camera"]
+        if distances is None or distances.shape[0] == 0:
+            print("[WARN] Raycast distances not yet populated.")
+        else:
+            print(f"[INFO] Raycast distances shape: {distances.shape}")
+
+        hits = raycast_sensor.data.ray_hits_w
+        for env_id in range(num_envs):
+            hits_env = hits[env_id]  # shape (R, 3)
+            valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
+            valid_hits = hits_env[valid_mask]  # shape (V, 3)
+            if valid_hits.shape[0] > 0:
+                # Draw the valid hits
+                draw_points(valid_hits.cpu().numpy(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+                print(f"[INFO] Valid raycast hits for environment {env_id}: {valid_hits.shape[0]}")
+            else:
+                print(f"[WARN] No valid raycast hits for environment {env_id}.")
         if count % 50 == 0:
             root_state = robot.data.default_root_state.clone()
             for i in range(num_envs):
@@ -335,11 +436,12 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
                 rotation = rotation_between(needle_forward, direction)
                 root_state[i, 3:7] = rotation
                 path_idx[i] = (idx + 1) % len(path)
+                camera_marker.visualize(raycaster.data.pos_w, raycaster.data.quat_w_world)
 
             robot.write_root_pose_to_sim(root_state[:, :7])
             robot.write_root_velocity_to_sim(root_state[:, 7:])
             robot.reset()
-
+        
         robot.write_data_to_sim()
         sim.step()
         count += 1

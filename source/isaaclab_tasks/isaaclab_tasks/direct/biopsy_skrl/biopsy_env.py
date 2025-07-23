@@ -139,6 +139,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
             mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
             physics_material=sim_utils.RigidBodyMaterialCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True)
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
     )
@@ -180,9 +181,9 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         update_period=1 / 60,
         offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.0), rot=(0, 0.0, 0.0, 1.0)),
         mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
-        attach_yaw_only=True,
+        attach_yaw_only=False,
         max_distance=0.01,
-        debug_vis=False,
+        debug_vis=True,
         pattern_cfg=patterns.LidarPatternCfg(
             channels=50, vertical_fov_range=[-180, 180], horizontal_fov_range=[-180, 180], horizontal_res=1.0
         )
@@ -193,7 +194,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         update_period=1 / 60,
         offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.0), rot=(0, 0.0, 0.0, 1.0)),
         mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
-        attach_yaw_only=True,
+        attach_yaw_only=False,
         max_distance=0.01,
         debug_vis=False,
         pattern_cfg=patterns.LidarPatternCfg(
@@ -205,7 +206,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 @configclass
 class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
-    episode_length_s = 8.3333  # 500 timesteps
+    episode_length_s = 4.1666  # 500 timesteps
     decimation = 2
     action_space = 3
     observation_space = 23
@@ -291,7 +292,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.PHI_Rad = torch.deg2rad(self.PHI_Deg)  # radians
             self.CURV = torch.tensor(0.2, device=self.device, dtype=torch.float32)  # mm
             self.dt_steer = torch.tensor(0.5, device=self.device, dtype=torch.float32)  # seconds
-            self.INSERTION_DEPTH = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
+            self.INSERTION_DEPTH = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
             self.TUMOR_REACH_THRESHOLD = torch.tensor(0.0075, device=self.device, dtype=torch.float32)  # mm
             self.DIST_THRESHOLD = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
         except Exception as e:
@@ -349,6 +350,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         for i in range(1):  # check env 0
             for j in range(10):  # assuming 10 poses
                 print(f"start_poses[{i}, {j}] = {self.start_poses[i, j]}")
+        
+        # add an offset to the start positions (tensor) so that its close to the skull
+        offset = torch.tensor([0.0, 0.05, 0.0], device=self.start_positions[0][0].device, dtype=torch.float32)  # offset by 2 cm in z-axis
+        if not self.cfg.viewer.headless:
+            self.start_positions[0][0] += offset
+            self.draw_points(self.start_positions[0][0], color=(1.0, 0.0, 0.0, 1.0), size=10.0)
+
 
         #self.draw_entry_points()
         #self.draw_path()
@@ -502,6 +510,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             # Apply agent's action
             insertion_depth = self.actions[env_id, 0]
             twist_angle_rad = self.actions[env_id, 1]
+            twist_angle_rad = 0.0
             next_pose = self.generate_needle_step_with_rebound(
                 current_pose=current_pose,
                 insertion_depth=insertion_depth,
@@ -540,14 +549,18 @@ class BiopsyDirectEnv(DirectRLEnv):
     def _reset_idx(self, env_ids):
         """
         Reset the environment index.
+        a) Reset the tooltip position and rotation based on new start pose index from the pickle data.
+        b) Reset the sensor and other buffers.
+        c) TODO: Reset also brain shift data if needed.
         """
         # Recompute any intermediate buffers (like tooltip pos, etc.)
+        print("Calling _reset_idx for env_ids:", env_ids)
         self._compute_intermediate_values(env_ids)
 
     def _get_dones(self):
         """
         Get the done flags for the environment. This includes:
-        - Number of trials exceeded the maximum number of trials
+        - Strong Collision with the vessels (TODO: after brain shift)
         - Time out if the episode length exceeds the maximum episode length
         - Tooltip reaches the tumor
         """
@@ -715,13 +728,26 @@ class BiopsyDirectEnv(DirectRLEnv):
         u2 = twist_angle_rad / self.dt_steer  # twist around needle axis (z)
 
         # Twist kinematics
-        v_local = torch.tensor([0, -torch.sin(phi), torch.cos(phi)], device=self.device)
-        w_local = torch.tensor([1.0 / self.CURV, 0, u2 / insertion_depth], device=self.device)
+        phi = torch.deg2rad(torch.tensor(self.PHI_Deg, device=self.device, dtype=torch.float32))
+        u2 = twist_angle_rad # / self.dt_steer  # [rad/sec]
 
-        v = insertion_depth * (current_pose[:3, :3] @ v_local)
-        w = insertion_depth * (current_pose[:3, :3] @ w_local)
+        # Twist vectors in local frame
+        v_local = torch.tensor([0.0,
+                                insertion_depth * torch.sin(phi),
+                                -insertion_depth * torch.cos(phi)], device=self.device)
 
+        w_local = torch.tensor([insertion_depth / self.CURV,
+                                0.0,
+                                u2], device=self.device)
+
+        # Rotate to global frame
+        R = current_pose[:3, :3]
+        v = R @ v_local
+        w = R @ w_local
+
+        # Build se(3) matrix
         xi_hat = self.twist_to_matrix(v, w)
+
 
         # Find nearest point on prior path
         tip_pos = current_pose[:3, 3]
@@ -758,7 +784,12 @@ class BiopsyDirectEnv(DirectRLEnv):
                 rotation_axis = rotation_axis / torch.norm(rotation_axis)
                 skew = skew_symmetric_matrix(rotation_axis)
                 rot_z = torch.eye(4, device=self.device)
-                rot_z[:3, :3] = torch.eye(3, device=self.device) + torch.sin(theta) * skew + (1 - torch.cos(theta)) * (skew @ skew)
+                rot_z[:3, :3] = (
+                    torch.eye(3, device=self.device) +
+                    torch.sin(theta) * skew +
+                    (1 - torch.cos(theta)) * (skew @ skew)
+                )
+
             rot_z = torch.eye(4, device=self.device)
             rot_z[:3, :3] = torch.tensor([
                 [torch.cos(theta), -torch.sin(theta), 0],
@@ -902,7 +933,8 @@ class BiopsyDirectEnv(DirectRLEnv):
             )
 
             print(f"[env {env_id}] Hits inside cylinder Vessel: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-            #self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
+            if self.cfg.viewer.headless and filtered_hits is not None:
+                self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
             # sparse_points_np = np.asarray(downsampled_pcd.points)
             # print(f"[env {env_id}] Sparse points shape: {sparse_points.shape}")
             if valid_hits_np.shape[0] != 0:
@@ -910,7 +942,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
 
                 if len(self.pcd.points) == 0:
-                    omni.log.warning(f"[env {env_id}] No valid points found in the point cloud.")
+                    omni.log.warn(f"[env {env_id}] No valid points found in the point cloud.")
                     return None
                 elif len(self.pcd.points) < 64:
                     # Use available points
