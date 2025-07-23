@@ -65,6 +65,9 @@ class ViewerCfg:
     This quantity is only effective if :attr:`origin` is set to "asset_body".
     """
 
+    headless: bool = False
+    """Whether to run the viewer in headless mode (no rendering). Default is False."""
+
 
 ##
 # Types.
