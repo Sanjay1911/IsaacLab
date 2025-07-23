@@ -134,7 +134,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/needle",
         spawn=sim_utils.CylinderCfg(
             radius=0.002,
-            height=0.1,
+            height=0.005,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
             mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
             physics_material=sim_utils.RigidBodyMaterialCfg(),
@@ -206,7 +206,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
     episode_length_s = 8.3333  # 500 timesteps
-    decimation = 120
+    decimation = 2
     action_space = 3
     observation_space = 23
     state_space = 0
@@ -475,9 +475,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             print(f"Insertion depths: {insertion_depths}")
             print(f"Twist angles (deg): {twist_angles_deg}")
             print(f"Twist angles (rad): {twist_angles_rad}")
-
-            self.actions[:, 0] = insertion_depths
-            self.actions[:, 1] = twist_angles_rad
+            self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)
             print(f"Updated actions: {self.actions}")
 
     def _apply_action(self):
@@ -512,13 +510,14 @@ class BiopsyDirectEnv(DirectRLEnv):
 
             new_root_state[env_id, :3] = new_pos
             new_root_state[env_id, 3:7] = new_quat
+            print(f"Env {env_id} - Current root state: pos={pos}, quat={quat}")
+            print(f"Env {env_id} - New root state: pos={new_pos}, quat={new_quat}")
 
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
         self._needle.reset()
 
-        # Apply the action to the robot    
-
+           
     def _compute_intermediate_values(self, env_ids):
         """
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
@@ -673,12 +672,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         Generate a discretized path from the start pose to the tumor centroid.
         """
-        print(f"Discretizing path from start pose {start_pose[0]} to tumor centroid {tumor_centroid}")
         start_pos = start_pose[0].to(dtype=torch.float32, device=self.device)
         end_pos = torch.tensor([tumor_centroid], dtype=torch.float32, device=self.device)
-        print(f"Shape of start_pos: {start_pos.shape}, Shape of end_pos: {end_pos.squeeze().shape}")
-        print(f"Start position: {start_pos}, End position: {end_pos.squeeze()}")
-        print(f"Type of start_pos: {start_pos.dtype}, Type of end_pos: {end_pos.dtype}")
         path = linspace(start_pos, end_pos.squeeze(), num_points)  # torch.linspace only accepts 1D tensors hence refer to https://github.com/pytorch/pytorch/issues/61292, TorchScript does not support self in scripted functions — it expects a pure function, not a method of a class.
         path_poses = torch.eye(4, device=self.device).repeat(num_points, 1, 1)
         path_poses[:, :3, 3] = path
@@ -705,7 +700,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             torch.Tensor: Updated SE(3) pose (4x4)
         """
         phi = torch.deg2rad(torch.tensor(self.PHI_Deg, device=self.device, dtype=torch.float32))
-        u2 = twist_angle_rad  # twist around needle axis (z)
+        u2 = twist_angle_rad / self.dt_steer  # twist around needle axis (z)
 
         # Twist kinematics
         v = torch.tensor([0, -insertion_depth * torch.sin(phi), insertion_depth * torch.cos(phi)], device=self.device)
