@@ -134,7 +134,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/needle",
         spawn=sim_utils.CylinderCfg(
             radius=0.002,
-            height=0.005,
+            height=0.002,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
             mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
             physics_material=sim_utils.RigidBodyMaterialCfg(),
@@ -268,12 +268,18 @@ class BiopsyDirectEnv(DirectRLEnv):
             qw = world_quat.real
 
             return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
+        if not self.cfg.viewer.headless:
+            import omni.log
+            omni.log.warn("Running in headless mode. No rendering will be performed.")
+            from isaacsim.util.debug_draw import _debug_draw
+            self.draw = _debug_draw.acquire_debug_draw_interface()
 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
         self.cloner = GridCloner(spacing=self.cfg.scene.env_spacing)
         self.offsets, _ = self.cloner.get_clone_transforms(self.num_envs)
         stage = get_current_stage()
         prim = stage.GetPrimAtPath("/World/envs/env_0/needle")
+        import omni.log
         omni.log.info(f"Prim: {prim}")
         omni.log.info(f"Is valid: {prim.IsValid()}")
         #self.draw = _debug_draw.acquire_debug_draw_interface()
@@ -285,13 +291,13 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.PHI_Rad = torch.deg2rad(self.PHI_Deg)  # radians
             self.CURV = torch.tensor(0.2, device=self.device, dtype=torch.float32)  # mm
             self.dt_steer = torch.tensor(0.5, device=self.device, dtype=torch.float32)  # seconds
-            self.INSERTION_DEPTH = torch.tensor(0.05, device=self.device, dtype=torch.float32)  # mm
+            self.INSERTION_DEPTH = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
             self.TUMOR_REACH_THRESHOLD = torch.tensor(0.0075, device=self.device, dtype=torch.float32)  # mm
             self.DIST_THRESHOLD = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
         except Exception as e:
             print("Error initializing constants:", e)
 
-        self.insertion_lookup_table = {0: self.INSERTION_DEPTH, 1: self.INSERTION_DEPTH + 0.01, 2: self.INSERTION_DEPTH + 0.02}
+        self.insertion_lookup_table = {0: self.INSERTION_DEPTH, 1: self.INSERTION_DEPTH + 0.001, 2: self.INSERTION_DEPTH + 0.002}
         self.twist_lookup_table = {
             0: 0.0, 1: 22.5, 2: 45.0, 3: 67.5, 4: 90.0, 5: 112.5, 6: 135.0, 7: 157.5, 8: 180.0, 9: 202.5, 10: 225.0, 11: 247.5, 12: 270.0, 13: 292.5, 14: 315.0, 15: 337.5
         }
@@ -516,8 +522,14 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
         self._needle.reset()
+        
+        if not self.cfg.viewer.headless:
+            prior_positions = prior_path[:, :3, 3].cpu().numpy()
+            tip_positions = new_root_state[:, :3].cpu().numpy()
+            self.draw_points(points_np=prior_positions, color=(0.8, 0.2, 0.2, 1.0), size=5.0)
+            self.draw_points(points_np=tip_positions, color=(0.2, 0.8, 0.2, 1.0), size=5.0)
 
-           
+
     def _compute_intermediate_values(self, env_ids):
         """
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
@@ -610,9 +622,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         #path_one_hot = torch.nn.functional.one_hot(self.active_path_idx, num_classes=3).float()  # [B, 3]
 
         obs = {"tooltip_position": self.tooltip_pos, "tooltip_quaternion": self.tooltip_rot, "raycaster": pcd_vessels, "depth_tumor": depth_to_tumor}  # "trial": try_history, 
-        for k, v in obs.items():
-            print(f"Observation {k}: {v}, type: {type(v)}")
-            print(f"{k}: {v.shape}")
+        # for k, v in obs.items():
+        #     print(f"Observation {k}: {v}, type: {type(v)}")
+        #     print(f"{k}: {v.shape}")
 
         return {"policy": obs}
 
@@ -703,8 +715,12 @@ class BiopsyDirectEnv(DirectRLEnv):
         u2 = twist_angle_rad / self.dt_steer  # twist around needle axis (z)
 
         # Twist kinematics
-        v = torch.tensor([0, -insertion_depth * torch.sin(phi), insertion_depth * torch.cos(phi)], device=self.device)
-        w = torch.tensor([insertion_depth / self.CURV, 0, u2], device=self.device)
+        v_local = torch.tensor([0, -torch.sin(phi), torch.cos(phi)], device=self.device)
+        w_local = torch.tensor([1.0 / self.CURV, 0, u2 / insertion_depth], device=self.device)
+
+        v = insertion_depth * (current_pose[:3, :3] @ v_local)
+        w = insertion_depth * (current_pose[:3, :3] @ w_local)
+
         xi_hat = self.twist_to_matrix(v, w)
 
         # Find nearest point on prior path
@@ -733,7 +749,16 @@ class BiopsyDirectEnv(DirectRLEnv):
             trans[:3, 3] = z_axis * self.REB
 
             # Rotation to realign
-            theta = torch.atan2(to_target[1], to_target[0]) - torch.atan2(z_axis[1], z_axis[0])
+            cos_theta = torch.clamp(torch.dot(z_axis, to_target), -1.0, 1.0)
+            theta = torch.acos(cos_theta)
+            rotation_axis = torch.cross(z_axis, to_target)
+            if torch.norm(rotation_axis) < 1e-6:
+                rot_z = torch.eye(4, device=self.device)
+            else:
+                rotation_axis = rotation_axis / torch.norm(rotation_axis)
+                skew = skew_symmetric_matrix(rotation_axis)
+                rot_z = torch.eye(4, device=self.device)
+                rot_z[:3, :3] = torch.eye(3, device=self.device) + torch.sin(theta) * skew + (1 - torch.cos(theta)) * (skew @ skew)
             rot_z = torch.eye(4, device=self.device)
             rot_z[:3, :3] = torch.tensor([
                 [torch.cos(theta), -torch.sin(theta), 0],
@@ -1048,11 +1073,42 @@ class BiopsyDirectEnv(DirectRLEnv):
         return pos, quat
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
-        self.draw.clear_points()
+        #self.draw.clear_points()
+
+        # Convert to numpy if torch
+        if isinstance(points_np, torch.Tensor):
+            points_np = points_np.detach().cpu().numpy()
+
+        # Handle empty input
+        if points_np is None or points_np.size == 0:
+            return
+
+        # Handle different shapes
+        if points_np.ndim == 3 and points_np.shape[1:] == (4, 4):
+            # Batch of SE(3) poses → extract positions from transformation matrices
+            points_np = points_np[:, :3, 3]
+        elif points_np.ndim == 2 and points_np.shape[1] == 4:
+            # Possibly incorrectly passed SE(3) matrix as flattened rows
+            points_np = points_np[:, :3]
+        elif points_np.ndim == 2 and points_np.shape[1] == 3:
+            # Already list of 3D points
+            pass
+        elif points_np.ndim == 1 and points_np.shape[0] == 4:
+            # Single 4D vector → assume it's a homogeneous point, strip last
+            points_np = points_np[:3].reshape(1, 3)
+        elif points_np.ndim == 1 and points_np.shape[0] == 3:
+            # Single 3D point
+            points_np = points_np.reshape(1, 3)
+        else:
+            raise ValueError(f"Unsupported shape for draw_points: {points_np.shape}")
+
+        # Final drawing
         point_list = [tuple(p) for p in points_np]
         colors = [color] * len(point_list)
         sizes = [size] * len(point_list)
+
         self.draw.draw_points(point_list, colors, sizes)
+
 
     def draw_lines(self, start, end, color):
         if isinstance(start, torch.Tensor):
