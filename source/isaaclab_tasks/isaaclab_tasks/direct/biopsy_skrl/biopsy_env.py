@@ -183,7 +183,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
         attach_yaw_only=False,
         max_distance=0.01,
-        debug_vis=True,
+        debug_vis=False,
         pattern_cfg=patterns.LidarPatternCfg(
             channels=50, vertical_fov_range=[-180, 180], horizontal_fov_range=[-180, 180], horizontal_res=1.0
         )
@@ -299,9 +299,6 @@ class BiopsyDirectEnv(DirectRLEnv):
             print("Error initializing constants:", e)
 
         self.insertion_lookup_table = {0: self.INSERTION_DEPTH, 1: self.INSERTION_DEPTH + 0.001, 2: self.INSERTION_DEPTH + 0.002}
-        self.twist_lookup_table = {
-            0: 0.0, 1: 22.5, 2: 45.0, 3: 67.5, 4: 90.0, 5: 112.5, 6: 135.0, 7: 157.5, 8: 180.0, 9: 202.5, 10: 225.0, 11: 247.5, 12: 270.0, 13: 292.5, 14: 315.0, 15: 337.5
-        }
         # read pickled data
         omni.log.info("Loading tumor data...")
         self.tumor_positions = []
