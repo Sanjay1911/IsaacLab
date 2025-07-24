@@ -903,122 +903,133 @@ class BiopsyDirectEnv(DirectRLEnv):
                 # Only draw cylinder for tumor hits (not for vessel hits)
                 #self.draw_cylinder(center=needle_center, axis=insertion_axis, radius=0.05, height=0.25)
 
+
     def boundary_check_vessel(self):
-        hits = self.raycast_vessel.data.ray_hits_w
+        # Get all ray hits (num_envs, num_rays, 3)
+        hits = self.raycast_vessel.data.ray_hits_w  # shape: (num_envs, R, 3)
+        valid_mask = torch.isfinite(hits).all(dim=-1)  # shape: (num_envs, R)
+        
+        # Get all needle positions and orientations
+        positions = self._needle.data.root_link_pos_w  # shape: (num_envs, 3)
+        quats = self._needle.data.root_link_quat_w     # shape: (num_envs, 4)
+
+        # Convert quaternions to rotation matrices → z-axes (insertion directions)
+        quats_np = quats.cpu().numpy()  # (N, 4)
+        Rs = R.from_quat(quats_np).as_matrix()  # (N, 3, 3)
+        z_axes = Rs[:, :, 2]  # (N, 3), tool z-axis per env
+
+        # Prepare tensors for return
+        sparse_points_all = []
+
         for env_id in range(self.num_envs):
-            hits_env = hits[env_id]  # shape (R, 3)
-            valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
-            valid_hits = hits_env[valid_mask]  # shape (V, 3)
-            tool_tip = torch.tensor([[0.0, 0.0, 0.0]])  # Fill with dummy
-            needle_center = tool_tip[env_id].cpu().numpy()
-            # Assuming the tool's orientation provides the correct insertion axis
-            insertion_axis = torch.tensor([[1.0, 0.0, 0.0, 0.0]])  # Fill with dummy  # This should be the rotation (orientation) of the tool
-            insertion_axis_np = insertion_axis[env_id].cpu().numpy()
-            omni.log.info(f"Type: {type(insertion_axis_np)}")
-            omni.log.info(f"Insertion Axis: {insertion_axis_np}")
-            axis = insertion_axis_np[:3]  # (x, y, z)
+            valid_hits_env = hits[env_id][valid_mask[env_id]]  # shape: (V, 3)
+            if valid_hits_env.numel() == 0:
+                omni.log.warn(f"[env {env_id}] No valid hits for vessel raycast.")
+                sparse_points_all.append(None)
+                continue
+
+            center = positions[env_id].cpu().numpy()
+            axis = z_axes[env_id]
             axis = axis / np.linalg.norm(axis)
-            print(f"[env {env_id}] Needle center: {needle_center}, Axis: {axis}")
-            omni.log.info(f"Axis:{type(axis)}")
-            valid_hits_np = valid_hits.cpu().numpy()
+            hits_np = valid_hits_env.cpu().numpy()
+
+            # Filter hits inside the cylinder
             filtered_hits = self.filter_hits_in_cylinder(
-                hits_np=valid_hits_np,
-                center=needle_center,
+                hits_np=hits_np,
+                center=center,
                 axis=axis,
                 radius=0.05,
-                height=0.25
+                height=0.25,
             )
 
-            print(f"[env {env_id}] Hits inside cylinder Vessel: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-            if self.cfg.viewer.headless and filtered_hits is not None:
-                self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0) 
-            # sparse_points_np = np.asarray(downsampled_pcd.points)
-            # print(f"[env {env_id}] Sparse points shape: {sparse_points.shape}")
-            if valid_hits_np.shape[0] != 0:
-                print("Valid hits shape:", valid_hits_np.shape, filtered_hits.shape)
-                self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
+            if not self.cfg.viewer.headless and filtered_hits is not None:
+                self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0)
 
-                if len(self.pcd.points) == 0:
-                    omni.log.warn(f"[env {env_id}] No valid points found in the point cloud.")
-                    return None
-                elif len(self.pcd.points) < 64:
-                    # Use available points
-                    points_np = np.asarray(self.pcd.points)
+            if filtered_hits.shape[0] == 0:
+                omni.log.warn(f"[env {env_id}] No valid hits inside cylinder.")
+                sparse_points_all.append(None)
+                continue
 
-                    # Repeat points with small Gaussian noise to pad to 64
-                    num_missing = 64 - len(points_np)
-                    idxs = np.random.choice(len(points_np), num_missing, replace=True)
-                    noise = np.random.normal(loc=0.0, scale=1e-4, size=(num_missing, 3))  # tweak scale if needed
-                    padded_points = np.concatenate([points_np, points_np[idxs] + noise], axis=0)
+            # Prepare point cloud
+            self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
 
-                    sparse_points = torch.tensor(padded_points, dtype=torch.float32, device=self.device)
-                else:
-                    sparse_pcd = self.pcd.farthest_point_down_sample(64)
-                    sparse_points = torch.tensor(np.asarray(sparse_pcd.points), dtype=torch.float32, device=self.device)
+            if len(self.pcd.points) < 64:
+                points_np = np.asarray(self.pcd.points)
+                num_missing = 64 - len(points_np)
+                idxs = np.random.choice(len(points_np), num_missing, replace=True)
+                noise = np.random.normal(loc=0.0, scale=1e-4, size=(num_missing, 3))
+                padded = np.concatenate([points_np, points_np[idxs] + noise], axis=0)
+                sparse = torch.tensor(padded, dtype=torch.float32, device=self.device)
+            else:
+                sparse_pcd = self.pcd.farthest_point_down_sample(64)
+                sparse = torch.tensor(np.asarray(sparse_pcd.points), dtype=torch.float32, device=self.device)
 
-                return sparse_points
-                # Only draw cylinder for vessel hits (if needed)
-                #self.draw_cylinder(center=needle_center, axis=axis, radius=0.05, height=0.25)
+            sparse_points_all.append(sparse)
+
+        return sparse_points_all  # list of [None or tensor(64, 3)] for each env
 
     def distance_to_vessel(self):
-        distances = self.raycast_cam_vessel.data.output["distance_to_camera"]
+        """
+        Compute the mean raycast distance from the tooltip to the vessel for each environment.
+        Returns:
+            torch.Tensor: shape (num_envs, 1), distance in meters.
+        """
+        distances = self.raycast_cam_vessel.data.output.get("distance_to_camera", None)
+
         if distances is None or distances.shape[0] == 0:
-            print("[WARN] Raycast distances not yet populated.")
-            return torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+            omni.log.warn("[distance_to_vessel] Raycast distances not yet populated.")
+            return torch.zeros((self.num_envs, 1), dtype=torch.float32, device=self.device)
 
-        num_envs = distances.shape[0]
-        H, W = distances.shape[1:3]
-        total_rays = H * W
+        max_dist = 0.005  # meters
+        B, H, W, _ = distances.shape
+        mean_dists = torch.zeros((B, 1), dtype=torch.float32, device=self.device)
 
-        max_dist = 0.005
-        mean_dists = torch.zeros((num_envs,), dtype=torch.float32, device=self.device)
-        for env_id in range(num_envs):
-            dists = distances[env_id, :, :, 0]
+        for env_id in range(B):
+            dists = distances[env_id, :, :, 0]  # (H, W)
             valid = (~torch.isinf(dists)) & (dists <= max_dist)
             num_valid = valid.sum().item()
+
             if num_valid > 0:
                 mean = dists[valid].mean()
-                mean_dists[env_id] = mean
-                print(f"[env {env_id}] Mean distance from tip to vessels (valid hits): {mean.item():.6f}")
+                mean_dists[env_id, 0] = mean
+                omni.log.info(f"[env {env_id}] Vessel distance: mean={mean.item():.6f}, valid rays={num_valid}")
             else:
-                mean_dists[env_id] = 0.0
-                print(f"[env {env_id}] No valid hits within {max_dist*1000:.1f} mm")
-            print(f"[env {env_id}] Valid rays hitting the Vessels: {num_valid}/{total_rays}")
-        return mean_dists
+                omni.log.warn(f"[env {env_id}] No valid vessel rays within {max_dist * 1000:.1f} mm")
+                mean_dists[env_id, 0] = 0.0
 
-    def distance_to_tumor(self, env_ids=None):
-        # camera marker
-        #self.camera_marker.visualize(self.raycast_cam_tumor.data.pos_w, self.raycast_cam_tumor.data.quat_w_world)
-        distances = self.raycast_cam_tumor.data.output["distance_to_camera"]
+        return mean_dists  # shape: (B, 1)
+
+    def distance_to_tumor(self):
+        """
+        Compute the mean raycast distance from the tooltip to the tumor for each environment.
+        Returns:
+            torch.Tensor: shape (num_envs, 1), distance in meters.
+        """
+        distances = self.raycast_cam_tumor.data.output.get("distance_to_camera", None)
+
         if distances is None or distances.shape[0] == 0:
-            print("[WARN] Raycast distances not yet populated.")
-            return torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+            omni.log.warn("[distance_to_tumor] Raycast distances not yet populated.")
+            return torch.zeros((self.num_envs, 1), dtype=torch.float32, device=self.device)
 
-        num_envs = distances.shape[0]
-        H, W = distances.shape[1:3]
-        total_rays = H * W
+        max_dist = 0.1  # meters
+        B, H, W, _ = distances.shape
+        mean_dists = torch.zeros((B, 1), dtype=torch.float32, device=self.device)
 
-        max_dist = 0.1  
-        mean_dists = torch.zeros((num_envs,), dtype=torch.float32, device=self.device)
-
-        for env_id in range(num_envs):
-            dists = distances[env_id, :, :, 0]  # shape (H, W)
+        for env_id in range(B):
+            dists = distances[env_id, :, :, 0]  # (H, W)
             valid = (~torch.isinf(dists)) & (dists <= max_dist)
             num_valid = valid.sum().item()
-            if num_valid > 0:
-                # mean distance
-                mean = dists[valid].mean()
-                # tip to first hit distance
-                first_hit = dists[valid].min()
-                print(f"[env {env_id}] First hit distance to tumor: {first_hit.item():.6f}")
-                mean_dists[env_id] = mean
-                print(f"[env {env_id}] Mean distance from tip to Tumor(valid hits): {mean.item():.6f}")
-            else:
-                mean_dists[env_id] = 0.0  # or float("inf") if you want to mark as invalid
-                print(f"[env {env_id}] No valid hits within {max_dist*1000:.1f} mm")
-            print(f"[env {env_id}] Valid rays hitting the Tumor: {num_valid}/{total_rays}")
 
-        return mean_dists
+            if num_valid > 0:
+                mean = dists[valid].mean()
+                mean_dists[env_id, 0] = mean
+                omni.log.info(f"[env {env_id}] Tumor distance: mean={mean.item():.5f}, valid rays={num_valid}")
+            else:
+                omni.log.warn(f"[env {env_id}] No valid tumor rays within {max_dist * 1000:.1f} mm")
+                mean_dists[env_id, 0] = 0.0
+
+        return mean_dists  # shape: (B, 1)
+
 
     def brain_shift(self, points_attr, original_np, env_id):
         new_np = self.brain_shift_data[env_id][0]
