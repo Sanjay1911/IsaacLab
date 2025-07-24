@@ -334,8 +334,14 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         omni.log.info(f"Start positions count: {len(self.start_positions)}")
         omni.log.info("Tumor data for envs loaded successfully.")
-        self.pos_tensor = torch.zeros((self.num_envs, 3), dtype=torch.float64, device=self.device)
-        self.quat_tensor = torch.zeros((self.num_envs, 4), dtype=torch.float64, device=self.device)
+        start_positions_np = np.array(self.start_positions)         # [N, 10, 3]
+        tumor_centroids_np = np.array(self.tumor_centroids)  # [N, 3]
+        offsets_np = np.array(self.offsets)                         # [N, 3]
+        offsets_expanded = offsets_np[:, None, :]                   # [N, 1, 3]
+        start_positions_offset = start_positions_np + offsets_expanded  # [N, 10, 3]
+        tumor_centroids_offset = tumor_centroids_np + offsets_np  # [N, 3]
+        self.start_positions_tensor = torch.tensor(start_positions_offset, device=self.device, dtype=torch.float32)
+        self.tumor_centroids_tensor = torch.tensor(tumor_centroids_offset, device=self.device, dtype=torch.float32)
         # Convert start poses to lookup tensors
         self.start_poses = torch.zeros((self.num_envs, len(self.start_positions[0]), 7), dtype=torch.float32, device=self.device)  # (envs, poses, 7)
         for i in range(self.num_envs):
@@ -347,17 +353,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         for i in range(1):  # check env 0
             for j in range(10):  # assuming 10 poses
                 print(f"start_poses[{i}, {j}] = {self.start_poses[i, j]}")
-        
+
         # add an offset to the start positions (tensor) so that its close to the skull
-        offset = torch.tensor([0.0, 0.05, 0.0], device=self.start_positions[0][0].device, dtype=torch.float32)  # offset by 2 cm in z-axis
+        #offset = torch.tensor([0.0, 0.05, 0.0], device=self.device, dtype=torch.float32)  # offset by 2 cm in z-axis
         if not self.cfg.viewer.headless:
-            self.start_positions[0][0] += offset
-            self.draw_points(self.start_positions[0][0], color=(1.0, 0.0, 0.0, 1.0), size=10.0)
+            for env_id in range(self.num_envs):
+                self.draw_points(self.start_positions_tensor[env_id, 0], color=(1.0, 0.0, 0.0, 1.0), size=5.0)
 
-
-        #self.draw_entry_points()
-        #self.draw_path()
-        self.draw_attempt = 0
         assert len(self.tumor_positions) == self.num_envs, f"Number of tumor positions {len(self.tumor_positions)} does not match number of envs {self.num_envs}"
         self.shuffled_tumor_centroids = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
         self.tooltip_pos = torch.zeros((self.num_envs, 3), device=self.device)
@@ -365,21 +367,21 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.tumor = self.scene["tumor"]
 
         # Set needle to start position for each environment from pickle data
+        # Assume: root_state shape is (num_envs, 13) → [x, y, z, qw, qx, qy, qz, ...]
+        root_state = self.scene["needle"].data.root_state_w.clone()  # Clone once, outside loop
         for env_id in range(self.num_envs):
             try:
-                root_state = self.scene["needle"].data.root_state_w.clone()
-                print(f"Root state before setting start position for env {env_id}: {root_state}")
-                start_pose = self.start_positions[env_id][0]  # Use the first start pose for each environment
-                start_quat = self.start_quaternions[env_id][0]  # Use the first start quaternion for each environment
-                root_state[:, :3] = torch.tensor(start_pose, device=self.device, dtype=torch.float32)
-                root_state[:, 3:7] = torch.tensor(start_quat, device=self.device, dtype=torch.float32)
-                print(f"Setting needle to start position for env {env_id}: {start_pose}, {start_quat}")
-                print(f"Root state to sim: {root_state}")
-                self.scene["needle"].write_root_pose_to_sim(root_state[:, :7])
-                self.scene["needle"].reset()
-                print("Write successful")
+                start_pose = self.start_positions_tensor[env_id][0]  # Tensor [3]
+                start_quat = torch.tensor(self.start_quaternions[env_id][0], device=self.device, dtype=torch.float32)  # Tensor [4]
+                root_state[env_id, :3] = start_pose
+                root_state[env_id, 3:7] = start_quat
+                print(f"Env {env_id} → Pose: {start_pose.cpu().numpy()}, Quat: {start_quat.cpu().numpy()}")
             except Exception as e:
-                print(f"[ERROR] Failed to set needle position for env {env_id}: {e}")
+                print(f"[ERROR] Failed to set needle for env {env_id}: {e}")
+
+        self.scene["needle"].write_root_pose_to_sim(root_state[:, :7])
+        self.scene["needle"].reset()
+        print("Write successful for all environments.")
 
         # Sensors
         self.raycast_cam_tumor = self.scene["raycast_camera_tumor"]
@@ -490,50 +492,57 @@ class BiopsyDirectEnv(DirectRLEnv):
             print(f"Updated actions: {self.actions}")
 
     def _apply_action(self):
-        root_state = self._needle.data.root_state_w.clone()  # [num_envs, 13]
+        root_state = self._needle.data.root_state_w.clone()  
         new_root_state = root_state.clone()
-        for env_id in range(self.num_envs):
-            # Extract current pose
-            pos = root_state[env_id, :3]
-            quat = root_state[env_id, 3:7]
-            rot = matrix_from_quat(quat.unsqueeze(0)).squeeze(0)  # [3, 3]
-            current_pose = torch.eye(4, device=self.device)
-            current_pose[:3, :3] = rot
-            current_pose[:3, 3] = pos
-            # Discretize path for rebound correction
-            prior_path = self.discretize_preop_path(
-                self.start_positions[env_id], self.tumor_centroids[env_id]
-            )
-            # Apply agent's action
-            insertion_depth = self.actions[env_id, 0]
-            twist_angle_rad = self.actions[env_id, 1]
-            twist_angle_rad = 0.0
+        pos = root_state[:, :3]              
+        quat = root_state[:, 3:7]           
+        rot = matrix_from_quat(quat)         
+        current_pose = torch.eye(4, device=self.device).repeat(self.num_envs, 1, 1) 
+        current_pose[:, :3, :3] = rot
+        current_pose[:, :3, 3] = pos
+        start_pose = self.start_positions_tensor[:, 0, :]       
+        print(f"Start pose shape: {start_pose.shape}")
+        prior_paths = [
+            self.discretize_preop_path(start_pose[i], self.tumor_centroids_tensor[i])
+            for i in range(self.num_envs)
+        ]
+        insertion_depths = self.actions[:, 0]  
+        twist_angles = self.actions[:, 1]     
+        next_poses = []
+        for i in range(self.num_envs):
             next_pose = self.generate_needle_step_with_rebound(
-                current_pose=current_pose,
-                insertion_depth=insertion_depth,
-                twist_angle_rad=twist_angle_rad,
-                prior_path=prior_path
+                current_pose=current_pose[i],
+                insertion_depth=insertion_depths[i],
+                twist_angle_rad=twist_angles[i],
+                prior_path=prior_paths[i]
             )
-            # Decompose next pose
-            new_pos = next_pose[:3, 3]
-            new_rot = next_pose[:3, :3]
-            new_quat = quat_from_matrix(new_rot)  # [x, y, z, w] → convert to [w, x, y, z]
-            new_quat = torch.tensor([new_quat[3], *new_quat[:3]], device=self.device)  # [w, x, y, z]
+            next_poses.append(next_pose)
 
-            new_root_state[env_id, :3] = new_pos
-            new_root_state[env_id, 3:7] = new_quat
-            print(f"Env {env_id} - Current root state: pos={pos}, quat={quat}")
-            print(f"Env {env_id} - New root state: pos={new_pos}, quat={new_quat}")
+        next_poses = torch.stack(next_poses)  
+        new_pos = next_poses[:, :3, 3]
+        new_rot = next_poses[:, :3, :3]
+        new_quat = quat_from_matrix(new_rot)            
+        new_quat = torch.stack([new_quat[:, 3], new_quat[:, 0], new_quat[:, 1], new_quat[:, 2]], dim=-1)  
 
+        new_root_state[:, :3] = new_pos
+        new_root_state[:, 3:7] = new_quat
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
         self._needle.reset()
-        
+
         if not self.cfg.viewer.headless:
-            prior_positions = prior_path[:, :3, 3].cpu().numpy()
-            tip_positions = new_root_state[:, :3].cpu().numpy()
-            self.draw_points(points_np=prior_positions, color=(0.8, 0.2, 0.2, 1.0), size=5.0)
-            self.draw_points(points_np=tip_positions, color=(0.2, 0.8, 0.2, 1.0), size=5.0)
+            # Draw tumor lines and current tip
+            for i in range(self.num_envs):
+                start = self.start_positions_tensor[i, 0]          
+                end = self.tumor_centroids_tensor[i]  
+                tip = new_pos[i]                                   
+                self.draw_lines(start, end, color="yellow")
+                self.draw_points(tip, color=(0.2, 0.8, 0.2, 1.0), size=4.0)
+            for i in range(self.num_envs):
+                prior_positions = prior_paths[i][:, :3, 3]   
+                self.draw_points(prior_positions, color=(1.0, 0.0, 0.0, 1.0), size=2.0)
+
+
 
 
     def _compute_intermediate_values(self, env_ids):
@@ -541,7 +550,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
         and the observations to be returned to the agent.
         """
-        self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(self.tooltip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
+        #self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(self.tooltip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
+        pass
 
     def _reset_idx(self, env_ids):
         """
@@ -710,9 +720,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         Generate a discretized path from the start pose to the tumor centroid.
         """
-        start_pos = start_pose[0].to(dtype=torch.float32, device=self.device)
-        end_pos = torch.tensor([tumor_centroid], dtype=torch.float32, device=self.device)
-        path = linspace(start_pos, end_pos.squeeze(), num_points)  # torch.linspace only accepts 1D tensors hence refer to https://github.com/pytorch/pytorch/issues/61292, TorchScript does not support self in scripted functions — it expects a pure function, not a method of a class.
+        start_pos = start_pose.to(dtype=torch.float32, device=self.device)
+        end_pos = tumor_centroid.to(dtype=torch.float32, device=self.device)
+        print("Inside Discretoize: Start pos shape :", start_pos.shape, "End pos shape:", end_pos.shape)
+        path = linspace(start_pos, end_pos, num_points)  # torch.linspace only accepts 1D tensors hence refer to https://github.com/pytorch/pytorch/issues/61292, TorchScript does not support self in scripted functions — it expects a pure function, not a method of a class.
         path_poses = torch.eye(4, device=self.device).repeat(num_points, 1, 1)
         path_poses[:, :3, 3] = path
         return path_poses
@@ -1130,15 +1141,12 @@ class BiopsyDirectEnv(DirectRLEnv):
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
         #self.draw.clear_points()
-
         # Convert to numpy if torch
         if isinstance(points_np, torch.Tensor):
             points_np = points_np.detach().cpu().numpy()
-
         # Handle empty input
         if points_np is None or points_np.size == 0:
             return
-
         # Handle different shapes
         if points_np.ndim == 3 and points_np.shape[1:] == (4, 4):
             # Batch of SE(3) poses → extract positions from transformation matrices
