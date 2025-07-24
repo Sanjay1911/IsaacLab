@@ -557,20 +557,26 @@ class BiopsyDirectEnv(DirectRLEnv):
     def _get_dones(self):
         """
         Get the done flags for the environment. This includes:
-        - Strong Collision with the vessels (TODO: after brain shift)
-        - Time out if the episode length exceeds the maximum episode length
+        - Strong Collision with the vessels (TODO)
+        - Time out if the episode length exceeds the maximum
         - Tooltip reaches the tumor
         """
         self._compute_intermediate_values(self.env_ids)
-        # Done when tooltip reaches the tumor or maximum episode length is exceeded or number of trials exceeded
-        distances = self.distance_to_tumor()
-        tumor_reached = distances <= self.TUMOR_REACH_THRESHOLD
+
+        distances = self.distance_to_tumor()  # shape: (B, 1)
+        tumor_reached = (distances <= self.TUMOR_REACH_THRESHOLD).squeeze(-1)  # shape: (B,)
+
         for i in range(min(5, self.num_envs)):
             print(f"[env {i}] distance: {distances[i].item():.4f} | reached: {tumor_reached[i].item()}")
-        time_out = self.episode_length_buf >= self.max_episode_length - 1
+
+        time_out = (self.episode_length_buf >= self.max_episode_length - 1)  # already shape: (B,)
         print(f"[DEBUG] episode_length_buf[:5]: {self.episode_length_buf[:5]}")
         print(f"[DEBUG] max_episode_length: {self.max_episode_length}")
+        print("tumor_reached shape:", tumor_reached.shape)  # Should be [B]
+        print("time_out shape:", time_out.shape)            # Should be [B]
+
         return tumor_reached, time_out
+
 
     def _get_observations(self):
         """
@@ -595,17 +601,24 @@ class BiopsyDirectEnv(DirectRLEnv):
         tip_to_vessel = self.distance_to_vessel()  # [B]
         print(f"Distance to tumor: {depth_to_tumor}, Distance to vessel: {tip_to_vessel}")
 
-        pcd_vessels = self.boundary_check_vessel()
-        omni.log.info(f"PCD Vessel Shape: {pcd_vessels.shape if pcd_vessels is not None else 'None'}")
-        #omni.log.info(f"PCD Vessel: {pcd_vessels.ndim}")
-        if pcd_vessels is None:
-            pcd_vessels = torch.zeros((self.num_envs, 64, 3), device=self.device)
-        elif pcd_vessels.ndim == 2:
-            # duplicate same PCD for all envs
-            pcd_vessels = pcd_vessels.unsqueeze(0).repeat(self.num_envs, 1, 1)
-        elif pcd_vessels.shape[0] != self.num_envs:
-            raise ValueError(f"Expected pcd_vessels to have {self.num_envs} samples, got {pcd_vessels.shape}")
+        pcd_vessels_list = self.boundary_check_vessel()  # list of [None or Tensor(64, 3)]
 
+        # Convert to tensor with padding if needed
+        if pcd_vessels_list is None:
+            pcd_vessels = torch.zeros((self.num_envs, 64, 3), device=self.device)
+        else:
+            padded_pcds = []
+            for i, pcd in enumerate(pcd_vessels_list):
+                if pcd is None:
+                    padded = torch.zeros((64, 3), device=self.device)
+                else:
+                    padded = pcd
+                padded_pcds.append(padded)
+
+            pcd_vessels = torch.stack(padded_pcds, dim=0)  # shape: (num_envs, 64, 3)
+
+        # Now safe to log shape
+        omni.log.info(f"PCD Vessel Shape: {pcd_vessels.shape}")
 
         # --- Confidence score (simple heuristic) ---
         vessel_penalty = (tip_to_vessel <= 0.005).float()  # e.g., if close to vessel
@@ -649,6 +662,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         w_tumor_dist = self.cfg.w_tumor_dist
         w_vessel_penalty = self.cfg.w_vessel_penalty
         bonus_inside_tumor = self.cfg.bonus_inside_tumor
+        print(f"[REWARDS] tip_to_tumor shape: {tip_to_tumor.shape}")
+        print(f"[REWARDS] tip_to_vessel shape: {tip_to_vessel.shape}")
+        print(f"[REWARDS] potentials shape: {self.potentials.shape}")
+        print(f"[REWARDS] prev_potentials shape: {self.prev_potentials.shape}")
         total_reward = self.compute_reward(tip_to_vessel, tip_to_tumor, self.potentials, self.prev_potentials, self.TUMOR_REACH_THRESHOLD, w_tumor_dist, w_vessel_penalty, bonus_inside_tumor)
         return total_reward
 
@@ -665,20 +682,19 @@ class BiopsyDirectEnv(DirectRLEnv):
         + bonus for being inside tumor
         """
         inside_tumor = (tip_tumor <= tumor_reach_threshold).float()
-        progress_reward = potentials - prev_potentials  # shape: (N,)
+        #progress_reward = potentials - prev_potentials  # shape: (N,)
         reward = (
             - (w_tumor_dist * tip_tumor)
             - (w_vessel_penalty * tip_vessel)
             #-(self.cfg.w_collision_score * current_collision_score)
             + (bonus_inside_tumor * inside_tumor.float())
-            + progress_reward
+            #+ progress_reward
         )
 
         # === 6. Optional: clip or normalize if needed ===
         reward = torch.clip(reward, min=-100.0, max=100.0)
+        return reward  # ensure shape [B]
 
-        return reward
-    
     #@torch.jit.script
     def compute_intermediate_values(self, tool_tip_pos: torch.Tensor, tumor_centroids: torch.Tensor, prev_potentials: torch.Tensor,):
         to_tumor_centroid = tumor_centroids - tool_tip_pos
