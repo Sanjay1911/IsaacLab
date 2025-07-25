@@ -560,6 +560,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         b) Reset the sensor and other buffers.
         c) TODO: Reset also brain shift data if needed.
         """
+        super()._reset_idx(env_ids)
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         print("Calling _reset_idx for env_ids:", env_ids)
         self._compute_intermediate_values(env_ids)
