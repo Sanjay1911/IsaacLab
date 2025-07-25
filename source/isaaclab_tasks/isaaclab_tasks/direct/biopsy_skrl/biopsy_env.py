@@ -366,6 +366,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.tooltip_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.tumor = self.scene["tumor"]
 
+        # active path index
+        self.active_path_index = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)  # [B, 10]
+
         # Set needle to start position for each environment from pickle data
         # Assume: root_state shape is (num_envs, 13) → [x, y, z, qw, qx, qy, qz, ...]
         root_state = self.scene["needle"].data.root_state_w.clone()  # Clone once, outside loop
@@ -499,8 +502,12 @@ class BiopsyDirectEnv(DirectRLEnv):
         rot = matrix_from_quat(quat)         
         current_pose = torch.eye(4, device=self.device).repeat(self.num_envs, 1, 1) 
         current_pose[:, :3, :3] = rot
-        current_pose[:, :3, 3] = pos
-        start_pose = self.start_positions_tensor[:, 0, :]       
+        current_pose[:, :3, 3] = pos    
+        start_pose = torch.stack([
+            self.start_positions_tensor[i, self.active_path_index[i]]
+            for i in range(self.num_envs)
+        ])
+
         print(f"Start pose shape: {start_pose.shape}")
         prior_paths = [
             self.discretize_preop_path(start_pose[i], self.tumor_centroids_tensor[i])
@@ -533,7 +540,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         if not self.cfg.viewer.headless:
             # Draw tumor lines and current tip
             for i in range(self.num_envs):
-                start = self.start_positions_tensor[i, 0]          
+                start = self.start_positions_tensor[i, self.active_path_index[i]]          
                 end = self.tumor_centroids_tensor[i]  
                 tip = new_pos[i]                                   
                 self.draw_lines(start, end, color="yellow")
@@ -542,9 +549,6 @@ class BiopsyDirectEnv(DirectRLEnv):
                 prior_positions = prior_paths[i][:, :3, 3]   
                 self.draw_points(prior_positions, color=(1.0, 0.0, 0.0, 1.0), size=2.0)
 
-
-
-
     def _compute_intermediate_values(self, env_ids):
         """
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
@@ -552,6 +556,25 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         #self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(self.tooltip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
         pass
+    
+    def reset_start_positions(self, env_ids):
+        root_state = self._needle.data.root_state_w.clone()
+
+        for env_id in env_ids:
+            idx = self.active_path_index[env_id].item()
+            pos = self.start_positions_tensor[env_id][idx]              # [3]
+            quat = torch.tensor(self.start_quaternions[env_id][idx],    # [4]
+                                device=self.device, dtype=torch.float32)
+
+            root_state[env_id, :3] = pos
+            root_state[env_id, 3:7] = quat
+            self.tooltip_pos[env_id] = pos
+            self.tooltip_rot[env_id] = quat
+
+            print(f"[RESET] Env {env_id} start → Pose: {pos.cpu().numpy()}, Quat: {quat.cpu().numpy()}")
+
+        self._needle.write_root_pose_to_sim(root_state[:, :7])
+        self._needle.reset()
 
     def _reset_idx(self, env_ids):
         """
@@ -562,6 +585,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         super()._reset_idx(env_ids)
         # Recompute any intermediate buffers (like tooltip pos, etc.)
+        self.active_path_index[env_ids] = torch.randint(
+            high=10,
+            size=(len(env_ids),),
+            device=self.device,
+            dtype=torch.int32
+        )
+        self.reset_start_positions(env_ids)
         print("Calling _reset_idx for env_ids:", env_ids)
         self._compute_intermediate_values(env_ids)
 
@@ -581,11 +611,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             print(f"[env {i}] distance: {distances[i].item():.4f} | reached: {tumor_reached[i].item()}")
 
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)  # already shape: (B,)
-        print(f"[DEBUG] episode_length_buf[:5]: {self.episode_length_buf[:5]}")
-        print(f"[DEBUG] max_episode_length: {self.max_episode_length}")
-        print("tumor_reached shape:", tumor_reached.shape)  # Should be [B]
-        print("time_out shape:", time_out.shape)            # Should be [B]
-
+        print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}")
         return tumor_reached, time_out
 
 
@@ -927,30 +953,23 @@ class BiopsyDirectEnv(DirectRLEnv):
                 print("Valid hits shape:", valid_hits_np.shape, filtered_hits.shape)
                 return filtered_hits  # Return filtered hits for further processing or visualization
             
-                #self.draw_points(filtered_hits, color=(1.0, 0.0, 1.0, 1.0), size=4.0) 
-                # Only draw cylinder for tumor hits (not for vessel hits)
-                #self.draw_cylinder(center=needle_center, axis=insertion_axis, radius=0.05, height=0.25)
-
-
     def boundary_check_vessel(self):
         # Get all ray hits (num_envs, num_rays, 3)
-        hits = self.raycast_vessel.data.ray_hits_w  # shape: (num_envs, R, 3)
-        valid_mask = torch.isfinite(hits).all(dim=-1)  # shape: (num_envs, R)
+        hits = self.raycast_vessel.data.ray_hits_w  
+        valid_mask = torch.isfinite(hits).all(dim=-1)  
         
         # Get all needle positions and orientations
-        positions = self._needle.data.root_link_pos_w  # shape: (num_envs, 3)
-        quats = self._needle.data.root_link_quat_w     # shape: (num_envs, 4)
+        positions = self._needle.data.root_link_pos_w  
+        quats = self._needle.data.root_link_quat_w     
 
         # Convert quaternions to rotation matrices → z-axes (insertion directions)
-        quats_np = quats.cpu().numpy()  # (N, 4)
-        Rs = R.from_quat(quats_np).as_matrix()  # (N, 3, 3)
-        z_axes = Rs[:, :, 2]  # (N, 3), tool z-axis per env
-
-        # Prepare tensors for return
+        quats_np = quats.cpu().numpy()  
+        Rs = R.from_quat(quats_np).as_matrix()  
+        z_axes = Rs[:, :, 2]  
         sparse_points_all = []
 
         for env_id in range(self.num_envs):
-            valid_hits_env = hits[env_id][valid_mask[env_id]]  # shape: (V, 3)
+            valid_hits_env = hits[env_id][valid_mask[env_id]]  
             if valid_hits_env.numel() == 0:
                 omni.log.warn(f"[env {env_id}] No valid hits for vessel raycast.")
                 sparse_points_all.append(None)
@@ -994,7 +1013,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
             sparse_points_all.append(sparse)
 
-        return sparse_points_all  # list of [None or tensor(64, 3)] for each env
+        return sparse_points_all 
 
     def distance_to_vessel(self):
         """
@@ -1023,7 +1042,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 omni.log.info(f"[env {env_id}] Vessel distance: mean={mean.item():.6f}, valid rays={num_valid}")
             else:
                 omni.log.warn(f"[env {env_id}] No valid vessel rays within {max_dist * 1000:.1f} mm")
-                mean_dists[env_id, 0] = 0.0
+                mean_dists[env_id, 0] = 100.0
 
         return mean_dists  # shape: (B, 1)
 
@@ -1054,10 +1073,9 @@ class BiopsyDirectEnv(DirectRLEnv):
                 omni.log.info(f"[env {env_id}] Tumor distance: mean={mean.item():.5f}, valid rays={num_valid}")
             else:
                 omni.log.warn(f"[env {env_id}] No valid tumor rays within {max_dist * 1000:.1f} mm")
-                mean_dists[env_id, 0] = 0.0
+                mean_dists[env_id, 0] = 100.0
 
         return mean_dists  # shape: (B, 1)
-
 
     def brain_shift(self, points_attr, original_np, env_id):
         new_np = self.brain_shift_data[env_id][0]
