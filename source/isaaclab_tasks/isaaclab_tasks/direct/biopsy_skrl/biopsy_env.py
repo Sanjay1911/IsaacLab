@@ -65,7 +65,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.io import dump_pickle, load_pickle
 
 # Math utilities
-from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix
+from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, sample_uniform
 
 # Visualization and markers
 from isaaclab.markers import VisualizationMarkers
@@ -206,8 +206,8 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 @configclass
 class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
-    episode_length_s = 4.1666  # 500 timesteps
-    decimation = 2
+    episode_length_s = 4.1666  # 250 timesteps
+    decimation = 50
     action_space = 3
     observation_space = 23
     state_space = 0
@@ -337,8 +337,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         start_positions_np = np.array(self.start_positions)         # [N, 10, 3]
         tumor_centroids_np = np.array(self.tumor_centroids)  # [N, 3]
         offsets_np = np.array(self.offsets)                         # [N, 3]
+        offset_to_skull = np.array([0.0, 0.049, 0.0])  # offset by 4.95 cm in y-axis
         offsets_expanded = offsets_np[:, None, :]                   # [N, 1, 3]
-        start_positions_offset = start_positions_np + offsets_expanded  # [N, 10, 3]
+        start_positions_offset = start_positions_np + offsets_expanded + offset_to_skull  # [N, 10, 3]
         tumor_centroids_offset = tumor_centroids_np + offsets_np  # [N, 3]
         self.start_positions_tensor = torch.tensor(start_positions_offset, device=self.device, dtype=torch.float32)
         self.tumor_centroids_tensor = torch.tensor(tumor_centroids_offset, device=self.device, dtype=torch.float32)
@@ -355,7 +356,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 print(f"start_poses[{i}, {j}] = {self.start_poses[i, j]}")
 
         # add an offset to the start positions (tensor) so that its close to the skull
-        #offset = torch.tensor([0.0, 0.05, 0.0], device=self.device, dtype=torch.float32)  # offset by 2 cm in z-axis
+        
         if not self.cfg.viewer.headless:
             for env_id in range(self.num_envs):
                 self.draw_points(self.start_positions_tensor[env_id, 0], color=(1.0, 0.0, 0.0, 1.0), size=5.0)
@@ -454,6 +455,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         refer https://forums.developer.nvidia.com/t/importing-scene-created-in-isaac-sim-to-isaac-lab/315590
         """
         self._needle = self.scene["needle"]
+        self._tumor = self.scene["tumor"]
 
     def _pre_physics_step(self, actions: torch.Tensor):
         """
@@ -486,7 +488,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 device=self.device,
                 dtype=torch.float32
             )
-            twist_angles_deg = twist_bins.float() * 22.5
+            twist_angles_deg = twist_bins.float() * 0.0  # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
             print(f"Insertion depths: {insertion_depths}")
             print(f"Twist angles (deg): {twist_angles_deg}")
@@ -508,7 +510,6 @@ class BiopsyDirectEnv(DirectRLEnv):
             for i in range(self.num_envs)
         ])
 
-        print(f"Start pose shape: {start_pose.shape}")
         prior_paths = [
             self.discretize_preop_path(start_pose[i], self.tumor_centroids_tensor[i])
             for i in range(self.num_envs)
@@ -517,19 +518,35 @@ class BiopsyDirectEnv(DirectRLEnv):
         twist_angles = self.actions[:, 1]     
         next_poses = []
         for i in range(self.num_envs):
+            # direction vector (start → tumor)
+            preop_direction = self.tumor_centroids_tensor[i] - start_pose[i]
+            preop_direction = preop_direction / torch.norm(preop_direction)
+
+            # Compute next pose
             next_pose = self.generate_needle_step_with_rebound(
                 current_pose=current_pose[i],
                 insertion_depth=insertion_depths[i],
                 twist_angle_rad=twist_angles[i],
                 prior_path=prior_paths[i]
             )
+
+            step_vec = next_pose[:3, 3] - current_pose[i, :3, 3]
+            step_len = torch.dot(step_vec, preop_direction)
+
+            # if step_len < 0:
+            #     next_pose = current_pose[i]
+            # else:
+            #     projected = step_len * preop_direction
+            #     next_pose[:3, 3] = current_pose[i, :3, 3] + projected
+
             next_poses.append(next_pose)
 
-        next_poses = torch.stack(next_poses)  
+        next_poses = torch.stack(next_poses)
+
         new_pos = next_poses[:, :3, 3]
         new_rot = next_poses[:, :3, :3]
-        new_quat = quat_from_matrix(new_rot)            
-        new_quat = torch.stack([new_quat[:, 3], new_quat[:, 0], new_quat[:, 1], new_quat[:, 2]], dim=-1)  
+        new_quat = quat_from_matrix(new_rot)
+        new_quat = torch.stack([new_quat[:, 3], new_quat[:, 0], new_quat[:, 1], new_quat[:, 2]], dim=-1)
 
         new_root_state[:, :3] = new_pos
         new_root_state[:, 3:7] = new_quat
@@ -538,16 +555,16 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._needle.reset()
 
         if not self.cfg.viewer.headless:
-            # Draw tumor lines and current tip
             for i in range(self.num_envs):
-                start = self.start_positions_tensor[i, self.active_path_index[i]]          
-                end = self.tumor_centroids_tensor[i]  
-                tip = new_pos[i]                                   
+                start = self.start_positions_tensor[i, self.active_path_index[i]]
+                end = self.tumor_centroids_tensor[i]
+                tip = new_pos[i]
                 self.draw_lines(start, end, color="yellow")
                 self.draw_points(tip, color=(0.2, 0.8, 0.2, 1.0), size=4.0)
             for i in range(self.num_envs):
-                prior_positions = prior_paths[i][:, :3, 3]   
+                prior_positions = prior_paths[i][:, :3, 3]
                 self.draw_points(prior_positions, color=(1.0, 0.0, 0.0, 1.0), size=2.0)
+
 
     def _compute_intermediate_values(self, env_ids):
         """
@@ -558,6 +575,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         pass
     
     def reset_start_positions(self, env_ids):
+        """
+        Reset the start positions of the needle for the given environment IDs.
+        """
         root_state = self._needle.data.root_state_w.clone()
 
         for env_id in env_ids:
@@ -582,6 +602,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         a) Reset the tooltip position and rotation based on new start pose index from the pickle data.
         b) Reset the sensor and other buffers.
         c) TODO: Reset also brain shift data if needed.
+        d) Reset the tumor poses using sample_uniform to add a small random offset.
         """
         super()._reset_idx(env_ids)
         # Recompute any intermediate buffers (like tooltip pos, etc.)
@@ -592,7 +613,21 @@ class BiopsyDirectEnv(DirectRLEnv):
             dtype=torch.int32
         )
         self.reset_start_positions(env_ids)
-        print("Calling _reset_idx for env_ids:", env_ids)
+
+        # Reset tumor poses using sample_uniform
+        tumor_world_poses = self._tumor.get_world_poses(env_ids)
+        position, quaternion = tumor_world_poses
+        omni.log.info(f"Initial tumor world poses: {tumor_world_poses}")
+        try:
+            omni.log.info(f"Resetting tumor poses for env_ids: {env_ids}, Tumor world poses: {tumor_world_poses[0]}")
+            sampled_offset = sample_uniform(lower=-0.001, upper=0.001, size=(len(env_ids), 3), device=self.device)
+            updated_position = position + sampled_offset
+            # stack updated poses with quaternions from tumor_world_poses
+            self._tumor.set_world_poses(positions=updated_position, orientations=quaternion, indices=env_ids)
+            print(f"[INFO] Tumor poses reset success for env_ids: {env_ids}")
+        except Exception as e:
+            omni.log.error(f"Error sampling tumor poses due to: {e}")
+        omni.log.info(f"Calling _reset_idx for env_ids: {env_ids}")
         self._compute_intermediate_values(env_ids)
 
     def _get_dones(self):
@@ -602,14 +637,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Time out if the episode length exceeds the maximum
         - Tooltip reaches the tumor
         """
-        self._compute_intermediate_values(self.env_ids)
-
         distances = self.distance_to_tumor()  # shape: (B, 1)
         tumor_reached = (distances <= self.TUMOR_REACH_THRESHOLD).squeeze(-1)  # shape: (B,)
 
         for i in range(min(5, self.num_envs)):
             print(f"[env {i}] distance: {distances[i].item():.4f} | reached: {tumor_reached[i].item()}")
-
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)  # already shape: (B,)
         print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}")
         return tumor_reached, time_out
@@ -699,10 +731,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         w_tumor_dist = self.cfg.w_tumor_dist
         w_vessel_penalty = self.cfg.w_vessel_penalty
         bonus_inside_tumor = self.cfg.bonus_inside_tumor
-        print(f"[REWARDS] tip_to_tumor shape: {tip_to_tumor.shape}")
-        print(f"[REWARDS] tip_to_vessel shape: {tip_to_vessel.shape}")
-        print(f"[REWARDS] potentials shape: {self.potentials.shape}")
-        print(f"[REWARDS] prev_potentials shape: {self.prev_potentials.shape}")
+        omni.log.info(f"[REWARDS] tip_to_tumor shape: {tip_to_tumor.shape}")
+        omni.log.info(f"[REWARDS] tip_to_vessel shape: {tip_to_vessel.shape}")
+        omni.log.info(f"[REWARDS] potentials shape: {self.potentials.shape}")
+        omni.log.info(f"[REWARDS] prev_potentials shape: {self.prev_potentials.shape}")
         total_reward = self.compute_reward(tip_to_vessel, tip_to_tumor, self.potentials, self.prev_potentials, self.TUMOR_REACH_THRESHOLD, w_tumor_dist, w_vessel_penalty, bonus_inside_tumor)
         return total_reward
 
@@ -743,13 +775,12 @@ class BiopsyDirectEnv(DirectRLEnv):
     # ## Additional Utility Functions for Visualization and Debugging ## #
     # ## --------------------------------------- ## #
 
-    def discretize_preop_path(self, start_pose, tumor_centroid, num_points=100):
+    def discretize_preop_path(self, start_pose, tumor_centroid, num_points=42):
         """
         Generate a discretized path from the start pose to the tumor centroid.
         """
         start_pos = start_pose.to(dtype=torch.float32, device=self.device)
         end_pos = tumor_centroid.to(dtype=torch.float32, device=self.device)
-        print("Inside Discretoize: Start pos shape :", start_pos.shape, "End pos shape:", end_pos.shape)
         path = linspace(start_pos, end_pos, num_points)  # torch.linspace only accepts 1D tensors hence refer to https://github.com/pytorch/pytorch/issues/61292, TorchScript does not support self in scripted functions — it expects a pure function, not a method of a class.
         path_poses = torch.eye(4, device=self.device).repeat(num_points, 1, 1)
         path_poses[:, :3, 3] = path
@@ -767,7 +798,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         insertion_depth: float,                # mm
         twist_angle_rad: float,                # radians
         prior_path: torch.Tensor,              # shape (N, 4, 4)
-        threshold_deg: float = 10.0            # deviation threshold in degrees
+        threshold_deg: float = 5.0            # deviation threshold in degrees
     ) -> torch.Tensor:
         """
         Apply one SE(3) twist-based step with optional rebound correction toward a soft path prior.
@@ -775,12 +806,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         Returns:
             torch.Tensor: Updated SE(3) pose (4x4)
         """
-        phi = torch.deg2rad(torch.tensor(self.PHI_Deg, device=self.device, dtype=torch.float32))
-        u2 = twist_angle_rad / self.dt_steer  # twist around needle axis (z)
-
         # Twist kinematics
         phi = torch.deg2rad(torch.tensor(self.PHI_Deg, device=self.device, dtype=torch.float32))
-        u2 = twist_angle_rad # / self.dt_steer  # [rad/sec]
+        u2 = twist_angle_rad  # / self.dt_steer  # [rad/sec]
 
         # Twist vectors in local frame
         v_local = torch.tensor([0.0,
@@ -852,6 +880,12 @@ class BiopsyDirectEnv(DirectRLEnv):
         else:
             # Normal forward twist motion
             next_pose = current_pose @ torch.linalg.matrix_exp(xi_hat)
+            # Check if the step is backwards
+            step_vec = next_pose[:3, 3] - current_pose[:3, 3]
+            forward_dir = current_pose[:3, 2]
+            # If step is backwards (negative dot product), zero it
+            if torch.dot(step_vec, forward_dir) < 0:
+                next_pose = current_pose.clone()
 
         return next_pose
 
@@ -920,7 +954,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         proj_lengths = np.dot(vecs, axis)  # projection on axis (height direction)
         radial_vecs = vecs - np.outer(proj_lengths, axis)
         radial_dists = np.linalg.norm(radial_vecs, axis=1)
-        print(f"Radial distances: {radial_dists, }, Projection lengths: {proj_lengths}")
+        # print(f"Radial distances: {radial_dists, }, Projection lengths: {proj_lengths}")
         # Condition: within radius and within height range
         mask = (proj_lengths >= -height / 2) & (proj_lengths <= height / 2) & (radial_dists <= radius)
         return hits_np[mask]
