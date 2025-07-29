@@ -91,8 +91,8 @@ class DictMultiDiscreteEnvCfg(BiopsyDirectEnvCfg):
         "tooltip_position": spaces.Box(low=-np.inf, high=np.inf, shape=(3,)),  # x, y, z
         "tooltip_quaternion": spaces.Box(low=-np.inf, high=np.inf, shape=(4,)),  # quaternion  qw, qx, qy, qz
         "raycaster": spaces.Box(low=-np.inf, high=np.inf, shape=(64, 3)),  # raw PCD
-        #"trial": spaces.Discrete(NUM_TRIALS),
-        "depth_tumor": spaces.Box(low=0.0, high=float("inf"), shape=(1,)),
+        "normalized_depth": spaces.Box(low=0.0, high=1.0, shape=(1,)),  # Normalized depth values for each env
+        "deviation": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Deviation values for each env
         # History of Previous Poses and their depth values
     })
     action_space = spaces.MultiDiscrete([3, 16])

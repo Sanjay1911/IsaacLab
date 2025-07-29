@@ -189,7 +189,7 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
         MultiCategoricalMixin.__init__(self, unnormalized_log_prob, reduction)
         self.pointnet = PointNetExtractor(point_channel=3, output_dim=256)  # your observation must be [B, N, 3]
         self.actor = nn.Sequential(
-            nn.Linear(264, 128),  # 256 from PointNet + 8 from other features
+            nn.Linear(265, 128),  # 256 from PointNet + 9 from other features
             nn.ELU(),
             nn.Linear(128, 64),
             nn.ELU(),
@@ -209,9 +209,13 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
         pointnet_features = self.pointnet(pcd)  # -> [B, 256]
 
         # Other inputs (make sure all are [B, D])
-        depth_tumor = states["depth_tumor"]
-        if depth_tumor.ndim == 1:
-            depth_tumor = depth_tumor.unsqueeze(0)
+        normalized_depth = states["normalized_depth"]
+        if normalized_depth.ndim == 1:
+            normalized_depth = normalized_depth.unsqueeze(0)
+
+        deviation = states["deviation"]
+        if deviation.ndim == 1:
+            deviation = deviation.unsqueeze(0)
 
         tooltip_pos = states["tooltip_position"]
         if tooltip_pos.ndim == 1:
@@ -227,12 +231,12 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
         # one_hot_trial = F.one_hot(trial.long(), num_classes=5).float()
 
         # Concatenate all features
-        other_features = torch.cat([depth_tumor, tooltip_pos, tooltip_quat], dim=-1)  # [B, 1 + 7 = 8]
+        other_features = torch.cat([normalized_depth, deviation, tooltip_pos, tooltip_quat], dim=-1)  # [B, 1 + 7 = 8]
         x = torch.cat([pointnet_features, other_features], dim=-1)  # [B, 256 + 8]
         if DEBUG:
             print("Raycaster shape:", pcd.shape)  # Should be [B, 64, 3]
             print(f"PointNet features: {pointnet_features.shape}")
-            print("Other features shapes:",depth_tumor.shape, tooltip_pos.shape, tooltip_quat.shape)  # Debug
+            print("Other features shapes:", normalized_depth.shape, deviation.shape, tooltip_pos.shape, tooltip_quat.shape)  # Debug
             print(f"Other features: {other_features.shape}")
             print(f"Input to actor: {x.shape}")
             print("Concatenated features shape:", x.shape)
