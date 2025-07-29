@@ -655,15 +655,27 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Time out if the episode length exceeds the maximum
         - Tooltip reaches the tumor
         """
-        distances = self.distance_to_tumor()  # shape: (B, 1)
-        tumor_reached = (distances <= self.TUMOR_REACH_THRESHOLD).squeeze(-1)  # shape: (B,)
+        _, _, projected_dist, path_length, d_ttip_tumor, d_start_tumor = self.calc_normalized_progress()
+        tumor_reached = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).squeeze(-1)  # shape: (B,)
 
         for i in range(min(5, self.num_envs)):
-            print(f"[env {i}] distance: {distances[i].item():.4f} | reached: {tumor_reached[i].item()}")
+            print(f"[env {i}] distance: {d_ttip_tumor[i].item():.4f} | reached: {tumor_reached[i].item()}")
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)  # already shape: (B,)
-        print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}")
-        return tumor_reached, time_out
-
+        crossed_path_length = (projected_dist > path_length) 
+        overshoot = (d_ttip_tumor > d_start_tumor).squeeze(-1)  # shape: (B,)
+        print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}, crossed path length ? : {crossed_path_length}, overshoot ? : {overshoot}")
+        truncated_condition = time_out | (crossed_path_length & overshoot)
+        if tumor_reached.any() or truncated_condition.any():
+            print(f"[DEBUG] Tumor reached: {tumor_reached}, Truncated condition: {truncated_condition}")
+            for i in range(self.num_envs):
+                if tumor_reached[i] or truncated_condition[i]:
+                    print(f"[DEBUG] saving plot")
+                    self.save_episode_plot(env_id=i, step_id=self.common_step_counter)
+                if tumor_reached[i]:
+                    print(f"[INFO] Env {i} reached the tumor.")
+                if truncated_condition[i]:
+                    print(f"[INFO] Env {i} is truncated due to time out or overshoot.")
+        return tumor_reached, truncated_condition
 
     def _get_observations(self):
         """
