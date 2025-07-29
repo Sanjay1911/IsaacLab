@@ -633,7 +633,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.reset_start_positions(env_ids)
 
         # Reset tumor poses using sample_uniform
-        tumor_world_poses = self._tumor.get_world_poses(env_ids)
+        tumor_world_poses = self.tumor.get_world_poses(env_ids)
         position, quaternion = tumor_world_poses
         omni.log.info(f"Initial tumor world poses: {tumor_world_poses}")
         try:
@@ -641,7 +641,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             sampled_offset = sample_uniform(lower=-0.001, upper=0.001, size=(len(env_ids), 3), device=self.device)
             updated_position = position + sampled_offset
             # stack updated poses with quaternions from tumor_world_poses
-            self._tumor.set_world_poses(positions=updated_position, orientations=quaternion, indices=env_ids)
+            self.tumor.set_world_poses(positions=updated_position, orientations=quaternion, indices=env_ids)
             print(f"[INFO] Tumor poses reset success for env_ids: {env_ids}")
         except Exception as e:
             omni.log.error(f"Error sampling tumor poses due to: {e}")
@@ -783,6 +783,76 @@ class BiopsyDirectEnv(DirectRLEnv):
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
     # ## --------------------------------------- ## #
+
+    def save_episode_plot(self, env_id: int, step_id: int):
+        log = self.metrics_log
+        time_steps = range(len(log["distance"][env_id]))
+        plt.figure(figsize=(12, 8))
+
+        # Subplots
+        plt.subplot(2, 2, 1)
+        plt.plot(time_steps, log["distance"][env_id], label="Distance to Tumor")
+        plt.title("Distance to Tumor")
+        plt.xlabel("Timestep")
+        plt.ylabel("Distance (m)")
+        plt.grid(True)
+
+        plt.subplot(2, 2, 2)
+        plt.plot(time_steps, log["normalized_progress"][env_id], label="Normalized Progress", color='green')
+        plt.title("Normalized Progress")
+        plt.xlabel("Timestep")
+        plt.ylim(0, 1.2)
+        plt.grid(True)
+
+        plt.subplot(2, 2, 3)
+        plt.plot(time_steps, log["deviation"][env_id], label="Deviation", color='red')
+        plt.title("Deviation from Path")
+        plt.xlabel("Timestep")
+        plt.grid(True)
+
+        plt.subplot(2, 2, 4)
+        plt.plot(time_steps, log["projected_dist"][env_id], label="Projected", color='orange')
+        plt.plot(time_steps, log["path_length"][env_id], label="Path Length", linestyle='--', color='gray')
+        plt.title("Progress vs Total Path")
+        plt.xlabel("Timestep")
+        plt.legend()
+        plt.grid(True)
+
+        os.makedirs("/home/sanjay/thesis_replications/forked/IsaacLab/custom/plots", exist_ok=True)
+        fname = f"/home/sanjay/thesis_replications/forked/IsaacLab/custom/plots/episode_env{env_id}_step{step_id}.png"
+        plt.tight_layout()
+        plt.savefig(fname)
+        plt.close()
+
+    def calc_normalized_progress(self):
+        # Needle Kinematics
+        root_state = self._needle.data.root_state_w.clone() 
+        self.tool_tip_pos = root_state[:, :3]  
+        self.tool_tip_rot = root_state[:, 3:7] 
+        start_pose = torch.stack([
+            self.start_positions_tensor[i, self.active_path_index[i]]
+            for i in range(self.num_envs)
+        ])
+        # Tumor Position and Orientation  
+        tumor_root_poses = self.tumor.get_world_poses(self.env_ids)  
+        tumor_pos, tumor_quat = tumor_root_poses
+        # Calculate normalized progress and deviation
+        d_ttip_tumor = torch.norm(self.tool_tip_pos - tumor_pos, dim=-1)  # distance from tooltip to tumor
+        d_startpos_tumor = torch.norm(start_pose - tumor_pos, dim=-1)  # distance from start position to tumor
+        tooltip_vec = self.tool_tip_pos - start_pose  
+        path_vector = tumor_pos - start_pose 
+        path_direction = F.normalize(path_vector, dim=-1)  # normalized direction vector from start to tumor
+        projected_dist = torch.sum(tooltip_vec * path_direction, dim=-1) 
+        path_length = torch.norm(path_vector, dim=-1)
+        normalized_progress = projected_dist / path_length
+        normalized_progress = torch.clamp(normalized_progress, 0.0, 1.0)
+        perpendicular_vec = tooltip_vec - (projected_dist.unsqueeze(-1) * path_direction)  # [B, 3]
+        deviation = torch.norm(perpendicular_vec, dim=-1)
+        print(f"Normalized progress: {normalized_progress}, Deviation: {deviation}")
+        print(f"Tooltip position: {self.tool_tip_pos}, Tumor position: {tumor_pos},")
+        print(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
+        print(f"Distance to tumor from tooltip: {d_ttip_tumor}, Distance from start position to tumor: {d_startpos_tumor}")
+        return normalized_progress, deviation, projected_dist, path_length, d_ttip_tumor, d_startpos_tumor
 
     def discretize_preop_path(self, start_pose, tumor_centroid, num_points=42):
         """
