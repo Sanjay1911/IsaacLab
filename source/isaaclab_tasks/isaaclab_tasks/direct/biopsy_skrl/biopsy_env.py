@@ -11,12 +11,14 @@ import os, sys
 import random
 import traceback
 from datetime import datetime
+
 # Numerical & scientific computing
 import numpy as np
 np.set_printoptions(threshold=sys.maxsize)
 
 import torch
 torch.set_printoptions(profile="full")
+import torch.nn.functional as F
 
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
@@ -72,6 +74,7 @@ from isaaclab.markers.config import FRAME_MARKER_CFG
 
 # Open3D for point cloud / mesh processing
 import open3d as o3d
+import matplotlib.pyplot as plt
 
 @torch.jit.script
 def linspace(start: torch.Tensor, stop: torch.Tensor, num: int):
