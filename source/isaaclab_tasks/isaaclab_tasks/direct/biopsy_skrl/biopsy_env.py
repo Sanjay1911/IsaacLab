@@ -1195,7 +1195,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             omni.log.warn("[distance_to_tumor] Raycast distances not yet populated.")
             return torch.zeros((self.num_envs, 1), dtype=torch.float32, device=self.device)
 
-        max_dist = 0.1  # meters
+        max_dist = 0.0005  # meters
         B, H, W, _ = distances.shape
         mean_dists = torch.zeros((B, 1), dtype=torch.float32, device=self.device)
 
@@ -1205,9 +1205,11 @@ class BiopsyDirectEnv(DirectRLEnv):
             num_valid = valid.sum().item()
 
             if num_valid > 0:
+                raw = dists[valid]
                 mean = dists[valid].mean()
                 mean_dists[env_id, 0] = mean
-                omni.log.info(f"[env {env_id}] Tumor distance: mean={mean.item():.5f}, valid rays={num_valid}")
+                omni.log.info(f"Raw: {raw}, Mean: {mean}, Valid rays: {num_valid}")
+                # omni.log.info(f"[env {env_id}] Tumor distance: raw: {raw.item()}, mean={mean.item():.5f}, valid rays={num_valid}")
             else:
                 omni.log.warn(f"[env {env_id}] No valid tumor rays within {max_dist * 1000:.1f} mm")
                 mean_dists[env_id, 0] = 100.0
