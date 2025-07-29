@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 # Standard libraries
-import sys
+import os, sys
 import random
 import traceback
-
+from datetime import datetime
 # Numerical & scientific computing
 import numpy as np
 np.set_printoptions(threshold=sys.maxsize)
@@ -22,7 +22,6 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as R
 
 # Gym and RL-related modules
-from gym.spaces import Box, Dict, Discrete, MultiDiscrete, Tuple
 import gymnasium as gym
 
 # USD and Omniverse / IsaacSim core libraries
@@ -61,7 +60,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.assets import RigidObjectCfg
 
 # IsaacLab utilities
-from isaaclab.utils import configclass
+from isaaclab.utils import configclass, convert_dict_to_backend
 from isaaclab.utils.io import dump_pickle, load_pickle
 
 # Math utilities
@@ -151,7 +150,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
         data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
         debug_vis=False,
-        max_distance=0.001,
+        max_distance=0.01,
         pattern_cfg=patterns.PinholeCameraPatternCfg(
             focal_length=24.0,
             horizontal_aperture=20.955,
@@ -269,6 +268,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             qw = world_quat.real
 
             return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
+        
         if not self.cfg.viewer.headless:
             import omni.log
             omni.log.warn("Running in headless mode. No rendering will be performed.")
@@ -392,6 +392,12 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.raycast_cam_vessel = self.scene["raycast_camera_vessel"]
         self.raycast_vessel = self.scene["raycast_vessel"]
         self.raycast_tumor = self.scene["raycast_tumor"]
+        self.raycast_cam_vessel_max_distance = 0.001
+        if not self.cfg.viewer.headless and self.cfg.viewer.save:
+            import omni.replicator.core as rep
+            datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = f"/home/sanjay/thesis_replications/forked/IsaacLab/custom/raycaster_output/{datetime_str}/{str(self.raycast_cam_vessel_max_distance)}"
+            self.rep_writer = rep.BasicWriter(output_dir=output_dir, frame_padding=3)
 
         # Brain Shift 
         self.brain_shift_data = []
@@ -1061,7 +1067,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             omni.log.warn("[distance_to_vessel] Raycast distances not yet populated.")
             return torch.zeros((self.num_envs, 1), dtype=torch.float32, device=self.device)
 
-        max_dist = 0.005  # meters
+        max_dist = self.raycast_cam_vessel_max_distance  # meters
         B, H, W, _ = distances.shape
         mean_dists = torch.zeros((B, 1), dtype=torch.float32, device=self.device)
 
@@ -1071,6 +1077,30 @@ class BiopsyDirectEnv(DirectRLEnv):
             num_valid = valid.sum().item()
 
             if num_valid > 0:
+                if self.cfg.viewer.save:
+                    # Extract camera data
+                    camera_index = 0
+                    # note: BasicWriter only supports saving data in numpy format, so we need to convert the data to numpy.
+                    single_cam_data = convert_dict_to_backend(
+                        {k: v[camera_index] for k, v in self.raycast_cam_vessel.data.output.items()}, backend="numpy"
+                    )
+                    # Extract the other information
+                    single_cam_info = self.raycast_cam_vessel.data.info[camera_index]
+
+                    # Pack data back into replicator format to save them using its writer
+                    rep_output = {"annotators": {}}
+                    for key, data, info in zip(single_cam_data.keys(), single_cam_data.values(), single_cam_info.values()):
+                        if info is not None:
+                            rep_output["annotators"][key] = {"render_product": {"data": data, **info}}
+                        else:
+                            rep_output["annotators"][key] = {"render_product": {"data": data}}
+                    # Save images
+                    rep_output["trigger_outputs"] = {"on_time": self.raycast_cam_vessel.frame[camera_index]}
+                    self.rep_writer.write(rep_output)
+                    
+                print(f"[env {env_id}] Valid rays: {num_valid}")
+                raw = dists[valid]
+                print(f"[env {env_id}] Raw distances: {raw.max()}, {raw.min()}, {raw.mean()}")
                 mean = dists[valid].mean()
                 mean_dists[env_id, 0] = mean
                 omni.log.info(f"[env {env_id}] Vessel distance: mean={mean.item():.6f}, valid rays={num_valid}")
