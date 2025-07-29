@@ -455,6 +455,15 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.potentials = torch.zeros(self.num_envs, dtype=torch.float32, device=self.sim.device)
         self.prev_potentials = torch.zeros_like(self.potentials)
 
+        self.metrics_log = {
+            "distance": [[] for _ in range(self.num_envs)],
+            "normalized_progress": [[] for _ in range(self.num_envs)],
+            "deviation": [[] for _ in range(self.num_envs)],
+            "projected_dist": [[] for _ in range(self.num_envs)],
+            "path_length": [[] for _ in range(self.num_envs)],
+        }
+
+
     def _setup_scene(self):
         """
         Setup the scene for the environment. But since InteractiveSceneCfg is used, the scene is already setup in the
@@ -474,7 +483,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         self.actions = actions.clone() 
         print(f"Actions received: {type(self.single_action_space)}")
-        if isinstance(self.single_action_space, Box):
+        if isinstance(self.single_action_space, gym.spaces.Box):
             low = torch.tensor(self.single_action_space.low, device=self.device)
             high = torch.tensor(self.single_action_space.high, device=self.device)
             print(f"Picked actions: {self.actions}")
@@ -659,17 +668,20 @@ class BiopsyDirectEnv(DirectRLEnv):
     def _get_observations(self):
         """
         Get the observations for the environment. This includes:
-        Tooltip Pose
-        Depth to Tumor
-        ~ Direction to Tumor Centroid
-        Downsampled PCD from RayCast Sensor
-        ~ Preop Pose (start pose)
-        ~ Try history and results
-        ~ One-hot encoding of active path index
+        - Tooltip Pose # TODO Today: 29.07.2025
+        - Normalized Depth to Tumor at time-step t and t-dt # TODO Today: 29.07.2025
+        - Direction to Tumor Centroid # TODO Today: 29.07.2025
+        - Downsampled PCD from RayCast Sensor
+        - Try history and results
+        - One-hot encoding of active path index
         """
-        # --- Core kinematics ---
-        self.tool_tip_pos = None
-        self.tool_tip_rot = None  # [B, 4]
+        normalized_progress, deviation, projected_dist, path_length, d_ttip_tumor, d_start_tumor = self.calc_normalized_progress()
+        for i in range(self.num_envs):
+            self.metrics_log["distance"][i].append(d_ttip_tumor[i].item())
+            self.metrics_log["normalized_progress"][i].append(normalized_progress[i].item())
+            self.metrics_log["deviation"][i].append(deviation[i].item())
+            self.metrics_log["projected_dist"][i].append(projected_dist[i].item())
+            self.metrics_log["path_length"][i].append(path_length[i].item())
 
         # --- Tumor geometry ---
         # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
@@ -698,14 +710,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         # Now safe to log shape
         omni.log.info(f"PCD Vessel Shape: {pcd_vessels.shape}")
 
-        # --- Confidence score (simple heuristic) ---
-        vessel_penalty = (tip_to_vessel <= 0.005).float()  # e.g., if close to vessel
-        confidence = torch.where(depth_to_tumor > 0, 1.0 / (depth_to_tumor + 1e-5), torch.tensor(0.0, device=self.device))  # [B]
-        confidence = confidence * (1.0 - vessel_penalty) 
-        confidence = torch.nan_to_num(confidence, nan=0.0, posinf=0.0, neginf=0.0)
-        confidence = torch.clamp(confidence, min=1e-3, max=10.0)  
-        print(f"Confidence scores: {confidence}")
-
         # Preop pose (start pose for current path) ---
         # preop_pos = torch.stack([
         #     torch.tensor(self.start_positions[env_id][self.active_path_idx[env_id]], device=self.device)
@@ -715,14 +719,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         #     torch.tensor(self.start_quaternions[env_id][self.active_path_idx[env_id]], device=self.device)
         #     for env_id in range(self.num_envs)
         # ])  # [B, 4]
+        print("normalized_progress shape:", normalized_progress.shape)
+        print("deviation shape:", deviation.shape)
 
-        # # --- Try history (binary success/failure for 3 attempts) ---
-        # try_history = torch.zeros((self.num_envs, 3), device=self.device)  # [B, 3]
-        
-        # --- One-hot encoding for active path index ---
-        #path_one_hot = torch.nn.functional.one_hot(self.active_path_idx, num_classes=3).float()  # [B, 3]
-
-        obs = {"tooltip_position": self.tooltip_pos, "tooltip_quaternion": self.tooltip_rot, "raycaster": pcd_vessels, "depth_tumor": depth_to_tumor}  # "trial": try_history, 
+        obs = {"tooltip_position": self.tooltip_pos, "tooltip_quaternion": self.tooltip_rot, "raycaster": pcd_vessels, "normalized_depth": normalized_progress, "deviation": deviation, }  
         # for k, v in obs.items():
         #     print(f"Observation {k}: {v}, type: {type(v)}")
         #     print(f"{k}: {v.shape}")
