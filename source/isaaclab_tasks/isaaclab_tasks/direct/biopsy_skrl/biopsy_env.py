@@ -234,10 +234,11 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     dof_velocity_scale = 0.1
 
     # reward scales
-    w_tumor_dist = 5.0
-    w_vessel_penalty = 3.0
-    w_collision_score = 1.5
-    bonus_inside_tumor = 10.0
+    w_progress = 5.0
+    w_deviation = 3.0
+    w_collision = 1.5
+    w_inside_tumor = 10.0
+    w_action = 1.0  # TODO: unused
 
 
 class BiopsyDirectEnv(DirectRLEnv):
@@ -684,16 +685,45 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Normalized Depth to Tumor at time-step t and t-dt # TODO Today: 29.07.2025
         - Direction to Tumor Centroid # TODO Today: 29.07.2025
         - Downsampled PCD from RayCast Sensor
-        - Try history and results
-        - One-hot encoding of active path index
+        - Previous Action
         """
+        print(f"[DEBUG-STEP] Observations called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         normalized_progress, deviation, projected_dist, path_length, d_ttip_tumor, d_start_tumor = self.calc_normalized_progress()
-        for i in range(self.num_envs):
-            self.metrics_log["distance"][i].append(d_ttip_tumor[i].item())
-            self.metrics_log["normalized_progress"][i].append(normalized_progress[i].item())
-            self.metrics_log["deviation"][i].append(deviation[i].item())
-            self.metrics_log["projected_dist"][i].append(projected_dist[i].item())
-            self.metrics_log["path_length"][i].append(path_length[i].item())
+        normalized_progress_t_ndt = self.prev_normalized_progress.clone()
+        prev_deviation_t_ndt = self.prev_deviation.clone()
+
+        self.prev_normalized_progress = normalized_progress.detach()
+        self.prev_deviation = deviation.detach()
+
+        current_action = self.actions.clone()
+        ttip_pos_t_ndt = self.prev_tooltip_pos.clone()             
+        self.prev_tooltip_pos = self.tool_tip_pos.detach()          
+        delta = self.tool_tip_pos - ttip_pos_t_ndt                   
+        norms = torch.norm(delta, dim=-1, keepdim=True) + 1e-8       
+        heading_t = delta / norms                                    
+        heading_t = torch.where(norms > 1e-6, heading_t, torch.zeros_like(heading_t))
+        print(f"Tooltip position at t: {self.tool_tip_pos}")
+        print(f"Tooltip position at t-dt: {ttip_pos_t_ndt}")
+        print(f"Heading at t: {heading_t}")
+
+        start_pose = self.get_start_pose_active(num_envs=self.num_envs)       # [B, 4, 4]
+        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor)
+        tip_positions = self.tool_tip_pos                                      # [B, 3]
+
+        target_idx, target_pose, next_pos = self.find_closest_path_index(tip_positions, prior_paths)
+
+        path_vec = F.normalize(next_pos - target_pose[:, :3, 3], dim=-1)      # [B, 3]
+        u_y, u_z = self.compute_basis(path_vec)                               # [B, 3], [B, 3]
+        heading_y = torch.sum(heading_t * u_y, dim=-1, keepdim=True)  # scalar per env
+        heading_z = torch.sum(heading_t * u_z, dim=-1, keepdim=True)  # scalar per env
+
+
+        # for i in range(self.num_envs):
+        #     self.metrics_log["distance"][i].append(d_ttip_tumor[i].item())
+        #     self.metrics_log["normalized_progress"][i].append(normalized_progress[i].item())
+        #     self.metrics_log["deviation"][i].append(deviation[i].item())
+        #     self.metrics_log["projected_dist"][i].append(projected_dist[i].item())
+        #     self.metrics_log["path_length"][i].append(path_length[i].item())
 
         # --- Tumor geometry ---
         # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
@@ -701,7 +731,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         if depth_to_tumor.ndim == 1:
             depth_to_tumor = depth_to_tumor.unsqueeze(-1) # Ensure it's [B, 1] for consistency
         tip_to_vessel = self.distance_to_vessel()  # [B]
-        print(f"Distance to tumor: {depth_to_tumor}, Distance to vessel: {tip_to_vessel}")
+        omni.log.info(f"Distance to vessel: {tip_to_vessel}")
 
         pcd_vessels_list = self.boundary_check_vessel()  # list of [None or Tensor(64, 3)]
 
@@ -721,20 +751,10 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Now safe to log shape
         omni.log.info(f"PCD Vessel Shape: {pcd_vessels.shape}")
-
-        # Preop pose (start pose for current path) ---
-        # preop_pos = torch.stack([
-        #     torch.tensor(self.start_positions[env_id][self.active_path_idx[env_id]], device=self.device)
-        #     for env_id in range(self.num_envs)
-        # ])  # [B, 3]
-        # preop_quat = torch.stack([
-        #     torch.tensor(self.start_quaternions[env_id][self.active_path_idx[env_id]], device=self.device)
-        #     for env_id in range(self.num_envs)
-        # ])  # [B, 4]
-        print("normalized_progress shape:", normalized_progress.shape)
-        print("deviation shape:", deviation.shape)
-
-        obs = {"tooltip_position": self.tooltip_pos, "tooltip_quaternion": self.tooltip_rot, "raycaster": pcd_vessels, "normalized_depth": normalized_progress, "deviation": deviation, }  
+        omni.log.info(f"normalized_progress shape: {normalized_progress.shape}")
+        omni.log.info(f"deviation shape: {deviation.shape}")
+        omni.log.info(f"current action shape: {current_action.shape}")
+        obs = {"current_action": current_action, "raycaster": pcd_vessels, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt}
         # for k, v in obs.items():
         #     print(f"Observation {k}: {v}, type: {type(v)}")
         #     print(f"{k}: {v.shape}")
@@ -795,6 +815,61 @@ class BiopsyDirectEnv(DirectRLEnv):
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
     # ## --------------------------------------- ## #
+
+    def get_start_pose_active(self, num_envs):
+        """
+        Returns the start pose for the active path index for each environment.
+        """
+        return torch.stack([
+            self.start_positions_tensor[i, self.active_path_index[i]]
+            for i in range(num_envs)
+        ], dim=0)
+
+    def get_prior_paths(self, start_pose, tumor_centroids):
+        return [
+            self.discretize_preop_path(start_pose[i], tumor_centroids[i])
+            for i in range(self.num_envs)
+        ]
+        
+    def compute_basis(self, path_vecs):  # [B, 3]
+        ref = torch.tensor([0.0, 0.0, 1.0], device=path_vecs.device).expand_as(path_vecs)
+        alt_ref = torch.tensor([0.0, 1.0, 0.0], device=path_vecs.device).expand_as(path_vecs)
+
+        # Check where path_vec is too close to [0, 0, 1]
+        is_collinear = torch.allclose(path_vecs, ref, atol=1e-2)
+        ref[is_collinear] = alt_ref[is_collinear]
+
+        u_y = torch.cross(path_vecs, ref, dim=-1)
+        u_y = F.normalize(u_y, dim=-1)
+        u_z = torch.cross(path_vecs, u_y, dim=-1)
+        u_z = F.normalize(u_z, dim=-1)
+        return u_y, u_z
+
+    def find_closest_path_index(self, tip_positions, prior_paths):
+        closest_indices = []
+        target_poses = []
+        next_positions = []
+
+        for i, path in enumerate(prior_paths):
+            path_positions = path[:, :3, 3]
+            dists = torch.norm(path_positions - tip_positions[i], dim=1)
+            idx = torch.argmin(dists)
+            target_pose = path[idx]
+
+            if idx < path.shape[0] - 1:
+                next_pos = path[idx + 1][:3, 3]
+            else:
+                next_pos = path[idx - 1][:3, 3]
+
+            closest_indices.append(idx)
+            target_poses.append(target_pose)
+            next_positions.append(next_pos)
+
+        return (
+            torch.tensor(closest_indices, device=self.device),
+            torch.stack(target_poses),
+            torch.stack(next_positions)
+        )
 
     def save_episode_plot(self, env_id: int, step_id: int):
         log = self.metrics_log
