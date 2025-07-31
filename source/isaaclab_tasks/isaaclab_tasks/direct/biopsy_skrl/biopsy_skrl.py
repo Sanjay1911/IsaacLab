@@ -15,7 +15,7 @@ from skrl.utils.spaces.torch import unflatten_tensorized_space  # https://skrl.r
 from gymnasium import spaces
 # seed for reproducibility
 set_seed(42)  
-DEBUG = True  
+DEBUG = False  
 
 class PointNetExtractor(nn.Module):
     def __init__(self, point_channel=3, output_dim=256):
@@ -67,7 +67,8 @@ class ContinouosActionPolicy(GaussianMixin, Model):
         states = inputs["states"]
         #print("States keys:", states, len(states[0]))  # Debugging line to check available keys
         states = unflatten_tensorized_space(self.observation_space, states)  # https://github.com/Toni-SM/skrl/discussions/205
-        #print("Unflattened states shape:", {k: v.shape for k, v in states.items()})  # Debugging line to check shapes
+        print("Unflattened states shape:", {k: v.shape for k, v in states.items()})  # Debugging line to check shapes
+        print("States keys:", states.keys())  # Debugging line to check available keys
         # Process raycaster point cloud [B, 64, 3]
         pcd = states["raycaster"]
         if pcd.ndim == 2:
@@ -189,7 +190,7 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
         MultiCategoricalMixin.__init__(self, unnormalized_log_prob, reduction)
         self.pointnet = PointNetExtractor(point_channel=3, output_dim=256)  # your observation must be [B, N, 3]
         self.actor = nn.Sequential(
-            nn.Linear(265, 128),  # 256 from PointNet + 9 from other features
+            nn.Linear(262, 128),  # 256 from PointNet + 6 from other features
             nn.ELU(),
             nn.Linear(128, 64),
             nn.ELU(),
@@ -198,9 +199,10 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        #print("States keys:", states, len(states[0]))  # Debugging line to check available keys
+        #print("States keys:", states, len(states[0]))  # Debugging line to check available keys - len(states[0]) = 64*3 + 1 + 1 + 2 + 1 + 1= 198
         states = unflatten_tensorized_space(self.observation_space, states)  # https://github.com/Toni-SM/skrl/discussions/205
         #print("Unflattened states shape:", {k: v.shape for k, v in states.items()})  # Debugging line to check shapes
+        #print("States keys:", states.keys())
         # Process raycaster point cloud [B, 64, 3]
         pcd = states["raycaster"]
         if pcd.ndim == 2:
@@ -209,21 +211,25 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
         pointnet_features = self.pointnet(pcd)  # -> [B, 256]
 
         # Other inputs (make sure all are [B, D])
-        normalized_depth = states["normalized_depth"]
-        if normalized_depth.ndim == 1:
-            normalized_depth = normalized_depth.unsqueeze(0)
+        normalized_depth_t = states["normalized_depth_t"]
+        if normalized_depth_t.ndim == 1:
+            normalized_depth_t = normalized_depth_t.unsqueeze(0)
 
-        deviation = states["deviation"]
-        if deviation.ndim == 1:
-            deviation = deviation.unsqueeze(0)
+        deviation_t = states["deviation_t"]
+        if deviation_t.ndim == 1:
+            deviation_t = deviation_t.unsqueeze(0)
 
-        tooltip_pos = states["tooltip_position"]
-        if tooltip_pos.ndim == 1:
-            tooltip_pos = tooltip_pos.unsqueeze(0)
+        normalized_depth_t_ndt = states["normalized_depth_t_ndt"]
+        if normalized_depth_t_ndt.ndim == 1:
+            normalized_depth_t_ndt = normalized_depth_t_ndt.unsqueeze(0)
+        
+        deviation_t_ndt = states["deviation_t_ndt"]
+        if deviation_t_ndt.ndim == 1:
+            deviation_t_ndt = deviation_t_ndt.unsqueeze(0)
 
-        tooltip_quat = states["tooltip_quaternion"]
-        if tooltip_quat.ndim == 1:
-            tooltip_quat = tooltip_quat.unsqueeze(0)
+        current_action = states["current_action"]
+        if current_action.ndim == 1:
+            current_action = current_action.unsqueeze(0)
 
         # trial = states["trial"]
         # if trial.ndim == 0:
@@ -231,12 +237,12 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
         # one_hot_trial = F.one_hot(trial.long(), num_classes=5).float()
 
         # Concatenate all features
-        other_features = torch.cat([normalized_depth, deviation, tooltip_pos, tooltip_quat], dim=-1)  # [B, 1 + 7 = 8]
+        other_features = torch.cat([current_action, normalized_depth_t, normalized_depth_t_ndt, deviation_t, deviation_t_ndt], dim=-1)  # [B, 1 + 7 = 8]
         x = torch.cat([pointnet_features, other_features], dim=-1)  # [B, 256 + 8]
         if DEBUG:
             print("Raycaster shape:", pcd.shape)  # Should be [B, 64, 3]
             print(f"PointNet features: {pointnet_features.shape}")
-            print("Other features shapes:", normalized_depth.shape, deviation.shape, tooltip_pos.shape, tooltip_quat.shape)  # Debug
+            print("Other features shapes:", normalized_depth_t.shape, normalized_depth_t_ndt.shape, deviation_t.shape, deviation_t_ndt.shape, current_action.shape, pcd.shape)  # Debug
             print(f"Other features: {other_features.shape}")
             print(f"Input to actor: {x.shape}")
             print("Concatenated features shape:", x.shape)
@@ -248,10 +254,9 @@ class ValueModel(DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device):
         Model.__init__(self, observation_space, action_space, device)
         DeterministicMixin.__init__(self)
-
         self.net = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.num_observations, 256),
+            nn.Linear(198, 256),  # has to be 198 because of the Dict observation space (match len(states) in compute method)
             nn.ELU(),
             nn.Linear(256, 128),
             nn.ELU(),
