@@ -431,26 +431,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
 
         # Observation space terms:
-        self.robot_root_pose = torch.zeros((self.num_envs, 7), dtype=torch.float32, device=self.device)  # (x, y, z, qw, qx, qy, qz)
-        self.robot_root_vel = torch.zeros((self.num_envs, 6), dtype=torch.float32, device=self.device)  # (vx, vy, vz, wx, wy, wz)
-        self.robot_tooltip_pose = torch.zeros((self.num_envs, 7), dtype=torch.float32, device=self.device)  # (x, y, z, qw, qx, qy, qz)
-        self.collision_scores = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)  # Placeholder for collision scores
-        self.entry_pose_idx = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)  # Index of the entry pose in the start poses
-        self.success_flag = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)  # Success flag for each environment
-        self.entry_confidence = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)  # Confidence for the entry pose
         self.pcd = o3d.geometry.PointCloud()  # Placeholder for point cloud data
-        self.retracting = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
-        self.trial_counts = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)
-
-        self.current_pos = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
-        self.delta_pos = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
-        self.current_quat = torch.zeros((self.num_envs, 4), dtype=torch.float32, device=self.device)
-        self.orientation_offset = torch.tensor([[1.0, 0.0, 0.0, 0.0]] * self.num_envs, dtype=torch.float32, device=self.device)
-        #print("📌 BINDING OF _reset_idx:", self._reset_idx)
-
-        self.pose_applied = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
-        self.trial_phase = ["preop"] * self.num_envs
-        self.trial_done = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        self.prev_normalized_progress = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        self.prev_deviation = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        self.prev_tooltip_pos = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
 
         # Rewards
         self.potentials = torch.zeros(self.num_envs, dtype=torch.float32, device=self.sim.device)
@@ -524,15 +508,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         current_pose = torch.eye(4, device=self.device).repeat(self.num_envs, 1, 1) 
         current_pose[:, :3, :3] = rot
         current_pose[:, :3, 3] = pos    
-        start_pose = torch.stack([
-            self.start_positions_tensor[i, self.active_path_index[i]]
-            for i in range(self.num_envs)
-        ])
-
-        prior_paths = [
-            self.discretize_preop_path(start_pose[i], self.tumor_centroids_tensor[i])
-            for i in range(self.num_envs)
-        ]
+        start_pose = self.get_start_pose_active(num_envs=self.num_envs)
+        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor)
         insertion_depths = self.actions[:, 0]  
         twist_angles = self.actions[:, 1]     
         next_poses = []
@@ -548,16 +525,6 @@ class BiopsyDirectEnv(DirectRLEnv):
                 twist_angle_rad=twist_angles[i],
                 prior_path=prior_paths[i]
             )
-
-            step_vec = next_pose[:3, 3] - current_pose[i, :3, 3]
-            step_len = torch.dot(step_vec, preop_direction)
-
-            # if step_len < 0:
-            #     next_pose = current_pose[i]
-            # else:
-            #     projected = step_len * preop_direction
-            #     next_pose[:3, 3] = current_pose[i, :3, 3] + projected
-
             next_poses.append(next_pose)
 
         next_poses = torch.stack(next_poses)
@@ -656,26 +623,23 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Time out if the episode length exceeds the maximum
         - Tooltip reaches the tumor
         """
+        print(f"[DEBUG-STEP] Dones called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         _, _, projected_dist, path_length, d_ttip_tumor, d_start_tumor = self.calc_normalized_progress()
         tumor_reached = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).squeeze(-1)  # shape: (B,)
-
-        for i in range(min(5, self.num_envs)):
-            print(f"[env {i}] distance: {d_ttip_tumor[i].item():.4f} | reached: {tumor_reached[i].item()}")
+        print(f"[DEBUG] Tumor reached: {tumor_reached}")
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)  # already shape: (B,)
         crossed_path_length = (projected_dist > path_length) 
         overshoot = (d_ttip_tumor > d_start_tumor).squeeze(-1)  # shape: (B,)
         print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}, crossed path length ? : {crossed_path_length}, overshoot ? : {overshoot}")
         truncated_condition = time_out | (crossed_path_length & overshoot)
-        if tumor_reached.any() or truncated_condition.any():
-            print(f"[DEBUG] Tumor reached: {tumor_reached}, Truncated condition: {truncated_condition}")
-            for i in range(self.num_envs):
-                if tumor_reached[i] or truncated_condition[i]:
-                    print(f"[DEBUG] saving plot")
-                    self.save_episode_plot(env_id=i, step_id=self.common_step_counter)
-                if tumor_reached[i]:
-                    print(f"[INFO] Env {i} reached the tumor.")
-                if truncated_condition[i]:
-                    print(f"[INFO] Env {i} is truncated due to time out or overshoot.")
+        # if tumor_reached.any() or truncated_condition.any():
+        #     for i in range(self.num_envs):
+        #         #if tumor_reached[i].item() or truncated_condition[i].item():
+        #             #self.save_episode_plot(env_id=i, step_id=self.common_step_counter)
+        #         if tumor_reached[i].item():
+        #             print(f"[INFO] Env {i} reached the tumor.")
+        #         if truncated_condition[i].item():
+        #             print(f"[INFO] Env {i} is truncated due to time out or overshoot.")
         return tumor_reached, truncated_condition
 
     def _get_observations(self):
@@ -727,9 +691,6 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # --- Tumor geometry ---
         # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
-        depth_to_tumor = self.distance_to_tumor()  # [B]
-        if depth_to_tumor.ndim == 1:
-            depth_to_tumor = depth_to_tumor.unsqueeze(-1) # Ensure it's [B, 1] for consistency
         tip_to_vessel = self.distance_to_vessel()  # [B]
         omni.log.info(f"Distance to vessel: {tip_to_vessel}")
 
@@ -767,23 +728,21 @@ class BiopsyDirectEnv(DirectRLEnv):
         a) RayCaster Camera reward based on distance to image plane and distance to camera
 
         """
-        tip_to_tumor = self.distance_to_tumor()  # [B]
-        tip_to_vessel = self.distance_to_vessel()  # [B]
-        w_tumor_dist = self.cfg.w_tumor_dist
-        w_vessel_penalty = self.cfg.w_vessel_penalty
-        bonus_inside_tumor = self.cfg.bonus_inside_tumor
-        omni.log.info(f"[REWARDS] tip_to_tumor shape: {tip_to_tumor.shape}")
-        omni.log.info(f"[REWARDS] tip_to_vessel shape: {tip_to_vessel.shape}")
-        omni.log.info(f"[REWARDS] potentials shape: {self.potentials.shape}")
-        omni.log.info(f"[REWARDS] prev_potentials shape: {self.prev_potentials.shape}")
-        total_reward = self.compute_reward(tip_to_vessel, tip_to_tumor, self.potentials, self.prev_potentials, self.TUMOR_REACH_THRESHOLD, w_tumor_dist, w_vessel_penalty, bonus_inside_tumor)
+        print(f"[DEBUG-STEP] Rewards called at time step: {self.common_step_counter}, {self._sim_step_counter}")
+        obs = self._get_observations()["policy"]
+        progress_t = obs["normalized_depth_t"]             
+        progress_t_dt = obs["normalized_depth_t_ndt"]      
+        deviation_t = obs["deviation_t"]                   
+        deviation_t_dt = obs["deviation_t_ndt"]            
+        action = obs["current_action"]                     
+        total_reward = self.compute_reward(progress_t, progress_t_dt, deviation_t, deviation_t_dt, action)
         return total_reward
 
     def _get_states(self):  # TODO: States for Asymmetric RL
         pass
 
     #@torch.jit.script
-    def compute_reward(self, tip_vessel, tip_tumor, potentials, prev_potentials, tumor_reach_threshold, w_tumor_dist, w_vessel_penalty, bonus_inside_tumor):  # TODO: actual Rewards
+    def compute_reward(self, progress_t, progress_t_dt, deviation_t, deviation_t_dt, action):  # TODO: actual Rewards
         """
         Reward structure:
         + reward for being closer to tumor
@@ -791,17 +750,16 @@ class BiopsyDirectEnv(DirectRLEnv):
         - penalty for high real-time collision score
         + bonus for being inside tumor
         """
-        inside_tumor = (tip_tumor <= tumor_reach_threshold).float()
-        #progress_reward = potentials - prev_potentials  # shape: (N,)
+        reward_progress = progress_t - progress_t_dt 
+        reward_deviation = deviation_t - deviation_t_dt
+        reward_action  = None  # TODO
+        reward_reached_tumor = (progress_t < self.TUMOR_REACH_THRESHOLD)
         reward = (
-            - (w_tumor_dist * tip_tumor)
-            - (w_vessel_penalty * tip_vessel)
-            #-(self.cfg.w_collision_score * current_collision_score)
-            + (bonus_inside_tumor * inside_tumor.float())
+            (self.cfg.w_progress * reward_progress)
+            + (self.cfg.w_deviation * reward_deviation)
+            + (self.cfg.w_inside_tumor * reward_reached_tumor.float())
             #+ progress_reward
         )
-
-        # === 6. Optional: clip or normalize if needed ===
         reward = torch.clip(reward, min=-100.0, max=100.0)
         return reward  # ensure shape [B]
 
