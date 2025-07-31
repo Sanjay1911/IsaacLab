@@ -88,11 +88,12 @@ class DictMultiDiscreteEnvCfg(BiopsyDirectEnvCfg):
 
     # spaces
     observation_space = spaces.Dict({
-        "tooltip_position": spaces.Box(low=-np.inf, high=np.inf, shape=(3,)),  # x, y, z
-        "tooltip_quaternion": spaces.Box(low=-np.inf, high=np.inf, shape=(4,)),  # quaternion  qw, qx, qy, qz
+        "current_action": spaces.MultiDiscrete([3, 16]),  # Current action values (e.g., insertion and twist)
         "raycaster": spaces.Box(low=-np.inf, high=np.inf, shape=(64, 3)),  # raw PCD
-        "normalized_depth": spaces.Box(low=0.0, high=1.0, shape=(1,)),  # Normalized depth values for each env
-        "deviation": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Deviation values for each env
+        "normalized_depth_t": spaces.Box(low=0.0, high=1.0, shape=(1,)),  # Normalized depth values for each env
+        "normalized_depth_t_ndt": spaces.Box(low=0.0, high=1.0, shape=(1,)),  # Normalized depth values for each env (NDT)
+        "deviation_t": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Deviation values for each env
+        "deviation_t_ndt": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Deviation values for each env (NDT)
         # History of Previous Poses and their depth values
     })
     action_space = spaces.MultiDiscrete([3, 16])
