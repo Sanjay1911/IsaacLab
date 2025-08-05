@@ -466,7 +466,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         - actions[:, :3]: delta position (x, y, z)
         - orientation remains fixed to preop base orientation
         """
-        print(f"[DEBUG-STEP] Pre-physics steps called at time step: {self.common_step_counter}, {self._sim_step_counter}")
+        # print(f"[DEBUG-STEP] Pre-physics steps called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         self.actions = actions.clone() 
         print(f"Actions received: {type(self.single_action_space)}")
         if isinstance(self.single_action_space, gym.spaces.Box):
@@ -501,7 +501,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             print(f"Updated actions: {self.actions}")
 
     def _apply_action(self):
-        print(f"[DEBUG-STEP] Apply action called at time step: {self.common_step_counter}, {self._sim_step_counter}")
+        # print(f"[DEBUG-STEP] Apply action called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         root_state = self._needle.data.root_state_w.clone()  
         new_root_state = root_state.clone()
         pos = root_state[:, :3]              
@@ -541,7 +541,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
         self._needle.reset()
-        print(f"[DEBUG-STEP] Action applied at time step: {self.common_step_counter}")
+        # print(f"[DEBUG-STEP] Action applied at time step: {self.common_step_counter}")
         if not self.cfg.viewer.headless:
             for i in range(self.num_envs):
                 start = self.start_positions_tensor[i, self.active_path_index[i]]
@@ -592,7 +592,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         c) TODO: Reset also brain shift data if needed.
         d) Reset the tumor poses using sample_uniform to add a small random offset.
         """
-        print(f"[DEBUG-STEP] Reset called at time step: {self.common_step_counter}, {self._sim_step_counter}")
+        # print(f"[DEBUG-STEP] Reset called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         super()._reset_idx(env_ids)
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         self.active_path_index[env_ids] = torch.randint(
@@ -626,8 +626,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Time out if the episode length exceeds the maximum
         - Tooltip reaches the tumor
         """
-        print(f"[DEBUG-STEP] Dones called at time step: {self.common_step_counter}, {self._sim_step_counter}")
-        _, _, projected_dist, path_length, d_ttip_tumor, d_start_tumor = self.calc_normalized_progress()
+        # print(f"[DEBUG-STEP] Dones called at time step: {self.common_step_counter}, {self._sim_step_counter}")
+        _, _, perpendicular_vector, path_length, d_ttip_tumor, d_start_tumor, projected_dist = self.calc_normalized_progress()
         tumor_reached = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).squeeze(-1)  # shape: (B,)
         print(f"[DEBUG] Tumor reached: {tumor_reached}")
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)  # already shape: (B,)
@@ -635,6 +635,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         overshoot = (d_ttip_tumor > d_start_tumor).squeeze(-1)  # shape: (B,)
         print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}, crossed path length ? : {crossed_path_length}, overshoot ? : {overshoot}")
         truncated_condition = time_out | (crossed_path_length & overshoot)
+        #for i in range(self.num_envs):
+            #print("Saving plot")
+            #self.save_episode_plot(env_id=i, step_id=self.common_step_counter)
         # if tumor_reached.any() or truncated_condition.any():
         #     for i in range(self.num_envs):
         #         #if tumor_reached[i].item() or truncated_condition[i].item():
@@ -654,8 +657,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Downsampled PCD from RayCast Sensor
         - Previous Action
         """
-        print(f"[DEBUG-STEP] Observations called at time step: {self.common_step_counter}, {self._sim_step_counter}")
-        normalized_progress, deviation, projected_dist, path_length, d_ttip_tumor, d_start_tumor = self.calc_normalized_progress()
+        # print(f"[DEBUG-STEP] Observations called at time step: {self.common_step_counter}, {self._sim_step_counter}")
+        normalized_progress, deviation, perpendicular_vector, path_length, d_ttip_tumor, d_start_tumor, projected_dist = self.calc_normalized_progress()
         normalized_progress_t_ndt = self.prev_normalized_progress.clone()
         prev_deviation_t_ndt = self.prev_deviation.clone()
 
@@ -668,9 +671,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         target_idx, target_pose, next_pos = self.find_closest_path_index(tip_positions, prior_paths)
         path_vec = F.normalize(next_pos - target_pose[:, :3, 3], dim=-1)      
         u_y, u_z = self.compute_basis(path_vec) 
-        signed_delta_y = deviation * u_y
-        signed_delta_z = deviation * u_z
-
+        signed_delta_y = torch.sum(perpendicular_vector * u_y, dim=-1, keepdim=True)  # scalar
+        signed_delta_z = torch.sum(perpendicular_vector * u_z, dim=-1, keepdim=True)  # scalar
+        print(f"Signed Delta Y: {signed_delta_y}, Signed Delta Z: {signed_delta_z}")
         current_action = self.actions.clone()
         ttip_pos_t_ndt = self.prev_tooltip_pos.clone()             
         self.prev_tooltip_pos = self.tool_tip_pos.detach()          
@@ -683,12 +686,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         print(f"Heading at t: {heading_t}")                              
         heading_y = torch.sum(heading_t * u_y, dim=-1, keepdim=True)  
         heading_z = torch.sum(heading_t * u_z, dim=-1, keepdim=True)  
-
-
+        print(f"Heading Y: {heading_y}, Heading Z: {heading_z}")
         # for i in range(self.num_envs):
-        #     self.metrics_log["distance"][i].append(d_ttip_tumor[i].item())
         #     self.metrics_log["normalized_progress"][i].append(normalized_progress[i].item())
         #     self.metrics_log["deviation"][i].append(deviation[i].item())
+        #     self.metrics_log["distance"][i].append(d_ttip_tumor[i].item())
         #     self.metrics_log["projected_dist"][i].append(projected_dist[i].item())
         #     self.metrics_log["path_length"][i].append(path_length[i].item())
 
@@ -734,7 +736,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         a) RayCaster Camera reward based on distance to image plane and distance to camera
 
         """
-        print(f"[DEBUG-STEP] Rewards called at time step: {self.common_step_counter}, {self._sim_step_counter}")
+        # print(f"[DEBUG-STEP] Rewards called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         obs = self._get_observations()["policy"]
         progress_t = obs["normalized_depth_t"]             
         progress_t_dt = obs["normalized_depth_t_ndt"]      
@@ -841,33 +843,33 @@ class BiopsyDirectEnv(DirectRLEnv):
         plt.figure(figsize=(12, 8))
 
         # Subplots
-        plt.subplot(2, 2, 1)
-        plt.plot(time_steps, log["distance"][env_id], label="Distance to Tumor")
-        plt.title("Distance to Tumor")
-        plt.xlabel("Timestep")
-        plt.ylabel("Distance (m)")
-        plt.grid(True)
+        # plt.subplot(2, 2, 1)
+        # plt.plot(time_steps, log["distance"][env_id], label="Distance to Tumor")
+        # plt.title("Distance to Tumor")
+        # plt.xlabel("Timestep")
+        # plt.ylabel("Distance (m)")
+        # plt.grid(True)
 
-        plt.subplot(2, 2, 2)
+        plt.subplot(2, 2, 1)
         plt.plot(time_steps, log["normalized_progress"][env_id], label="Normalized Progress", color='green')
         plt.title("Normalized Progress")
         plt.xlabel("Timestep")
         plt.ylim(0, 1.2)
         plt.grid(True)
 
-        plt.subplot(2, 2, 3)
+        plt.subplot(2, 2, 2)
         plt.plot(time_steps, log["deviation"][env_id], label="Deviation", color='red')
         plt.title("Deviation from Path")
         plt.xlabel("Timestep")
         plt.grid(True)
 
-        plt.subplot(2, 2, 4)
-        plt.plot(time_steps, log["projected_dist"][env_id], label="Projected", color='orange')
-        plt.plot(time_steps, log["path_length"][env_id], label="Path Length", linestyle='--', color='gray')
-        plt.title("Progress vs Total Path")
-        plt.xlabel("Timestep")
-        plt.legend()
-        plt.grid(True)
+        # plt.subplot(2, 2, 4)
+        # plt.plot(time_steps, log["projected_dist"][env_id], label="Projected", color='orange')
+        # plt.plot(time_steps, log["path_length"][env_id], label="Path Length", linestyle='--', color='gray')
+        # plt.title("Progress vs Total Path")
+        # plt.xlabel("Timestep")
+        # plt.legend()
+        # plt.grid(True)
 
         os.makedirs("/home/sanjay/thesis_replications/forked/IsaacLab/custom/plots", exist_ok=True)
         fname = f"/home/sanjay/thesis_replications/forked/IsaacLab/custom/plots/episode_env{env_id}_step{step_id}.png"
@@ -899,11 +901,12 @@ class BiopsyDirectEnv(DirectRLEnv):
         normalized_progress = torch.clamp(normalized_progress, 0.0, 1.0)
         perpendicular_vec = tooltip_vec - (projected_dist.unsqueeze(-1) * path_direction)  # [B, 3]
         deviation = torch.norm(perpendicular_vec, dim=-1)
+        print(f"Deviation:{deviation}")
         print(f"Normalized progress: {normalized_progress}, Deviation: {deviation}")
         print(f"Tooltip position: {self.tool_tip_pos}, Tumor position: {tumor_pos},")
         print(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
         print(f"Distance to tumor from tooltip: {d_ttip_tumor}, Distance from start position to tumor: {d_startpos_tumor}")
-        return normalized_progress, deviation, projected_dist, path_length, d_ttip_tumor, d_startpos_tumor
+        return normalized_progress, deviation, perpendicular_vec, path_length, d_ttip_tumor, d_startpos_tumor, projected_dist
 
     def discretize_preop_path(self, start_pose, tumor_centroid, num_points=42):
         """
