@@ -238,7 +238,7 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     w_deviation = 3.0
     w_collision = 1.5
     w_inside_tumor = 10.0
-    w_action = 1.0  # TODO: unused
+    w_action = 1.0  
 
 
 class BiopsyDirectEnv(DirectRLEnv):
@@ -299,6 +299,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.INSERTION_DEPTH = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
             self.TUMOR_REACH_THRESHOLD = torch.tensor(0.0075, device=self.device, dtype=torch.float32)  # mm
             self.DIST_THRESHOLD = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
+            self.K_DEV = torch.tensor(10.0, device=self.device, dtype=torch.float32)  # Deviation scaling factor
         except Exception as e:
             print("Error initializing constants:", e)
 
@@ -651,9 +652,9 @@ class BiopsyDirectEnv(DirectRLEnv):
     def _get_observations(self):
         """
         Get the observations for the environment. This includes:
-        - Tooltip Pose # TODO Today: 29.07.2025
-        - Normalized Depth to Tumor at time-step t and t-dt # TODO Today: 29.07.2025
-        - Direction to Tumor Centroid # TODO Today: 29.07.2025
+        - Tooltip Pose
+        - Normalized Depth to Tumor at time-step t and t-dt
+        - Direction to Tumor Centroid
         - Downsampled PCD from RayCast Sensor
         - Previous Action
         """
@@ -673,20 +674,21 @@ class BiopsyDirectEnv(DirectRLEnv):
         u_y, u_z = self.compute_basis(path_vec) 
         signed_delta_y = torch.sum(perpendicular_vector * u_y, dim=-1, keepdim=True)  # scalar
         signed_delta_z = torch.sum(perpendicular_vector * u_z, dim=-1, keepdim=True)  # scalar
-        print(f"Signed Delta Y: {signed_delta_y}, Signed Delta Z: {signed_delta_z}")
+        omni.log.info(f"Signed Delta Y: {signed_delta_y}, Signed Delta Z: {signed_delta_z}")
         current_action = self.actions.clone()
         ttip_pos_t_ndt = self.prev_tooltip_pos.clone()             
         self.prev_tooltip_pos = self.tool_tip_pos.detach()          
         delta = self.tool_tip_pos - ttip_pos_t_ndt                   
         norms = torch.norm(delta, dim=-1, keepdim=True) + 1e-8       
-        heading_t = delta / norms                                    
-        heading_t = torch.where(norms > 1e-6, heading_t, torch.zeros_like(heading_t))
-        print(f"Tooltip position at t: {self.tool_tip_pos}")
-        print(f"Tooltip position at t-dt: {ttip_pos_t_ndt}")
-        print(f"Heading at t: {heading_t}")                              
-        heading_y = torch.sum(heading_t * u_y, dim=-1, keepdim=True)  
-        heading_z = torch.sum(heading_t * u_z, dim=-1, keepdim=True)  
-        print(f"Heading Y: {heading_y}, Heading Z: {heading_z}")
+        heading = delta / norms                                    
+        heading = torch.where(norms > 1e-6, heading, torch.zeros_like(heading))
+        heading_t = torch.sum(heading * path_vec, dim=-1, keepdim=True)  # scalar
+        omni.log.info(f"Tooltip position at t: {self.tool_tip_pos}")
+        omni.log.info(f"Tooltip position at t-dt: {ttip_pos_t_ndt}")
+        omni.log.info(f"Heading at t: {heading_t}")
+        heading_y = torch.sum(heading * u_y, dim=-1, keepdim=True)
+        heading_z = torch.sum(heading * u_z, dim=-1, keepdim=True)
+        omni.log.info(f"Heading Y: {heading_y}, Heading Z: {heading_z}")
         # for i in range(self.num_envs):
         #     self.metrics_log["normalized_progress"][i].append(normalized_progress[i].item())
         #     self.metrics_log["deviation"][i].append(deviation[i].item())
@@ -700,9 +702,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"normalized_progress shape: {normalized_progress.shape}")
         omni.log.info(f"deviation shape: {deviation.shape}")
         omni.log.info(f"current action shape: {current_action.shape}")
-        print(f"Shape of signed delta_y: {signed_delta_y.shape}, signed_delta_z: {signed_delta_z.shape}")
-        print(f"Shape of heading_y: {heading_y.shape}, heading_z: {heading_z.shape}")
-        print(f"Shape of heading: {heading_t.shape}")
+        omni.log.info(f"Shape of signed delta_y: {signed_delta_y.shape}, signed_delta_z: {signed_delta_z.shape}")
+        omni.log.info(f"Shape of heading_y: {heading_y.shape}, heading_z: {heading_z.shape}")
+        omni.log.info(f"Shape of heading: {heading_t.shape}")
         obs = {"current_action": current_action, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt, "signed_delta_y": signed_delta_y, "signed_delta_z": signed_delta_z, "heading_y": heading_y, "heading_z": heading_z, "heading_t": heading_t}
         # for k, v in obs.items():
         #     print(f"Observation {k}: {v}, type: {type(v)}")
@@ -738,25 +740,18 @@ class BiopsyDirectEnv(DirectRLEnv):
         - penalty for high real-time collision score
         + bonus for being inside tumor
         """
-        reward_progress = progress_t - progress_t_dt 
-        reward_deviation = deviation_t - deviation_t_dt
-        reward_action  = None  # TODO
+        reward_progress = progress_t - progress_t_dt
+        reward_deviation = torch.exp(-self.K_DEV * deviation_t ** 2)
         reward_reached_tumor = (progress_t < self.TUMOR_REACH_THRESHOLD)
+        reward_action = torch.norm(action, dim=-1)  # L2 norm of the action vector
         reward = (
             (self.cfg.w_progress * reward_progress)
             + (self.cfg.w_deviation * reward_deviation)
             + (self.cfg.w_inside_tumor * reward_reached_tumor.float())
-            #+ progress_reward
+            - (self.cfg.w_action * reward_action)
         )
         reward = torch.clip(reward, min=-100.0, max=100.0)
         return reward  # ensure shape [B]
-
-    #@torch.jit.script
-    def compute_intermediate_values(self, tool_tip_pos: torch.Tensor, tumor_centroids: torch.Tensor, prev_potentials: torch.Tensor,):
-        to_tumor_centroid = tumor_centroids - tool_tip_pos
-        new_potentials = -torch.norm(to_tumor_centroid, dim=-1)
-        print(f"New potentials: {new_potentials}, Previous potentials: {prev_potentials}")
-        return new_potentials, prev_potentials
 
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
@@ -881,11 +876,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         normalized_progress = torch.clamp(normalized_progress, 0.0, 1.0)
         perpendicular_vec = tooltip_vec - (projected_dist.unsqueeze(-1) * path_direction)  # [B, 3]
         deviation = torch.norm(perpendicular_vec, dim=-1)
-        print(f"Deviation:{deviation}")
-        print(f"Normalized progress: {normalized_progress}, Deviation: {deviation}")
-        print(f"Tooltip position: {self.tool_tip_pos}, Tumor position: {tumor_pos},")
-        print(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
-        print(f"Distance to tumor from tooltip: {d_ttip_tumor}, Distance from start position to tumor: {d_startpos_tumor}")
+        omni.log.info(f"Deviation:{deviation}")
+        omni.log.info(f"Normalized progress: {normalized_progress}, Deviation: {deviation}")
+        omni.log.info(f"Tooltip position: {self.tool_tip_pos}, Tumor position: {tumor_pos},")
+        omni.log.info(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
+        omni.log.info(f"Distance to tumor from tooltip: {d_ttip_tumor}, Distance from start position to tumor: {d_startpos_tumor}")
         return normalized_progress, deviation, perpendicular_vec, path_length, d_ttip_tumor, d_startpos_tumor, projected_dist
 
     def discretize_preop_path(self, start_pose, tumor_centroid, num_points=42):
