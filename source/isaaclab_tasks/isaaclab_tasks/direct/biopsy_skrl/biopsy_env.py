@@ -466,6 +466,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         - actions[:, :3]: delta position (x, y, z)
         - orientation remains fixed to preop base orientation
         """
+        print(f"[DEBUG-STEP] Pre-physics steps called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         self.actions = actions.clone() 
         print(f"Actions received: {type(self.single_action_space)}")
         if isinstance(self.single_action_space, gym.spaces.Box):
@@ -491,7 +492,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 device=self.device,
                 dtype=torch.float32
             )
-            twist_angles_deg = twist_bins.float() * 0.0  # 0.0 degrees for no twist
+            twist_angles_deg = twist_bins.float() * 22.5  # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
             print(f"Insertion depths: {insertion_depths}")
             print(f"Twist angles (deg): {twist_angles_deg}")
@@ -500,6 +501,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             print(f"Updated actions: {self.actions}")
 
     def _apply_action(self):
+        print(f"[DEBUG-STEP] Apply action called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         root_state = self._needle.data.root_state_w.clone()  
         new_root_state = root_state.clone()
         pos = root_state[:, :3]              
@@ -539,7 +541,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
         self._needle.reset()
-
+        print(f"[DEBUG-STEP] Action applied at time step: {self.common_step_counter}")
         if not self.cfg.viewer.headless:
             for i in range(self.num_envs):
                 start = self.start_positions_tensor[i, self.active_path_index[i]]
@@ -590,6 +592,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         c) TODO: Reset also brain shift data if needed.
         d) Reset the tumor poses using sample_uniform to add a small random offset.
         """
+        print(f"[DEBUG-STEP] Reset called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         super()._reset_idx(env_ids)
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         self.active_path_index[env_ids] = torch.randint(
@@ -659,6 +662,15 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.prev_normalized_progress = normalized_progress.detach()
         self.prev_deviation = deviation.detach()
 
+        start_pose = self.get_start_pose_active(num_envs=self.num_envs)       
+        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor)
+        tip_positions = self.tool_tip_pos                                      
+        target_idx, target_pose, next_pos = self.find_closest_path_index(tip_positions, prior_paths)
+        path_vec = F.normalize(next_pos - target_pose[:, :3, 3], dim=-1)      
+        u_y, u_z = self.compute_basis(path_vec) 
+        signed_delta_y = deviation * u_y
+        signed_delta_z = deviation * u_z
+
         current_action = self.actions.clone()
         ttip_pos_t_ndt = self.prev_tooltip_pos.clone()             
         self.prev_tooltip_pos = self.tool_tip_pos.detach()          
@@ -668,18 +680,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         heading_t = torch.where(norms > 1e-6, heading_t, torch.zeros_like(heading_t))
         print(f"Tooltip position at t: {self.tool_tip_pos}")
         print(f"Tooltip position at t-dt: {ttip_pos_t_ndt}")
-        print(f"Heading at t: {heading_t}")
-
-        start_pose = self.get_start_pose_active(num_envs=self.num_envs)       # [B, 4, 4]
-        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor)
-        tip_positions = self.tool_tip_pos                                      # [B, 3]
-
-        target_idx, target_pose, next_pos = self.find_closest_path_index(tip_positions, prior_paths)
-
-        path_vec = F.normalize(next_pos - target_pose[:, :3, 3], dim=-1)      # [B, 3]
-        u_y, u_z = self.compute_basis(path_vec)                               # [B, 3], [B, 3]
-        heading_y = torch.sum(heading_t * u_y, dim=-1, keepdim=True)  # scalar per env
-        heading_z = torch.sum(heading_t * u_z, dim=-1, keepdim=True)  # scalar per env
+        print(f"Heading at t: {heading_t}")                              
+        heading_y = torch.sum(heading_t * u_y, dim=-1, keepdim=True)  
+        heading_z = torch.sum(heading_t * u_z, dim=-1, keepdim=True)  
 
 
         # for i in range(self.num_envs):
@@ -715,6 +718,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"normalized_progress shape: {normalized_progress.shape}")
         omni.log.info(f"deviation shape: {deviation.shape}")
         omni.log.info(f"current action shape: {current_action.shape}")
+        print(f"Shape of signed delta_y: {signed_delta_y.shape}, signed_delta_z: {signed_delta_z.shape}")
+        print(f"Shape of heading_y: {heading_y.shape}, heading_z: {heading_z.shape}")
+        print(f"Shape of heading: {heading_t.shape}")
         obs = {"current_action": current_action, "raycaster": pcd_vessels, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt}
         # for k, v in obs.items():
         #     print(f"Observation {k}: {v}, type: {type(v)}")
