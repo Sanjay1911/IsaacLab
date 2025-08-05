@@ -696,34 +696,14 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # --- Tumor geometry ---
         # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
-        tip_to_vessel = self.distance_to_vessel()  # [B]
-        omni.log.info(f"Distance to vessel: {tip_to_vessel}")
-
-        pcd_vessels_list = self.boundary_check_vessel()  # list of [None or Tensor(64, 3)]
-
-        # Convert to tensor with padding if needed
-        if pcd_vessels_list is None:
-            pcd_vessels = torch.zeros((self.num_envs, 64, 3), device=self.device)
-        else:
-            padded_pcds = []
-            for i, pcd in enumerate(pcd_vessels_list):
-                if pcd is None:
-                    padded = torch.zeros((64, 3), device=self.device)
-                else:
-                    padded = pcd
-                padded_pcds.append(padded)
-
-            pcd_vessels = torch.stack(padded_pcds, dim=0)  # shape: (num_envs, 64, 3)
-
         # Now safe to log shape
-        omni.log.info(f"PCD Vessel Shape: {pcd_vessels.shape}")
         omni.log.info(f"normalized_progress shape: {normalized_progress.shape}")
         omni.log.info(f"deviation shape: {deviation.shape}")
         omni.log.info(f"current action shape: {current_action.shape}")
         print(f"Shape of signed delta_y: {signed_delta_y.shape}, signed_delta_z: {signed_delta_z.shape}")
         print(f"Shape of heading_y: {heading_y.shape}, heading_z: {heading_z.shape}")
         print(f"Shape of heading: {heading_t.shape}")
-        obs = {"current_action": current_action, "raycaster": pcd_vessels, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt}
+        obs = {"current_action": current_action, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt, "signed_delta_y": signed_delta_y, "signed_delta_z": signed_delta_z, "heading_y": heading_y, "heading_z": heading_z, "heading_t": heading_t}
         # for k, v in obs.items():
         #     print(f"Observation {k}: {v}, type: {type(v)}")
         #     print(f"{k}: {v.shape}")

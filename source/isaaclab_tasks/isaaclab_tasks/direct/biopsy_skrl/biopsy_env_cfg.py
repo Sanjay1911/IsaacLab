@@ -89,11 +89,15 @@ class DictMultiDiscreteEnvCfg(BiopsyDirectEnvCfg):
     # spaces
     observation_space = spaces.Dict({
         "current_action": spaces.MultiDiscrete([3, 16]),  # Current action values (e.g., insertion and twist)
-        "raycaster": spaces.Box(low=-np.inf, high=np.inf, shape=(64, 3)),  # raw PCD
         "normalized_depth_t": spaces.Box(low=0.0, high=1.0, shape=(1,)),  # Normalized depth values for each env
-        "normalized_depth_t_ndt": spaces.Box(low=0.0, high=1.0, shape=(1,)),  # Normalized depth values for each env (NDT)
+        "normalized_depth_t_ndt": spaces.Box(low=0.0, high=1.0, shape=(1,)), 
         "deviation_t": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Deviation values for each env
-        "deviation_t_ndt": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Deviation values for each env (NDT)
+        "deviation_t_ndt": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)), 
+        "signed_delta_y": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Signed delta y values
+        "signed_delta_z": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Signed delta z values
+        "heading_y": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Heading y values
+        "heading_z": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Heading z values
+        "heading_t": spaces.Box(low=-np.inf, high=np.inf, shape=(3,)),  # Heading t values
         # History of Previous Poses and their depth values
     })
     action_space = spaces.MultiDiscrete([3, 16])
