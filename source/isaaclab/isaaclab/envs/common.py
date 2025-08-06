@@ -68,6 +68,9 @@ class ViewerCfg:
     headless: bool = False
     """Whether to run the viewer in headless mode (no rendering). Default is False."""
 
+    save: bool = False
+    """Whether to save raycast data to a file. Default is False."""
+
 
 ##
 # Types.

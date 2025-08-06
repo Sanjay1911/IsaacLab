@@ -97,7 +97,7 @@ class DictMultiDiscreteEnvCfg(BiopsyDirectEnvCfg):
         "signed_delta_z": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Signed delta z values
         "heading_y": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Heading y values
         "heading_z": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Heading z values
-        "heading_t": spaces.Box(low=-np.inf, high=np.inf, shape=(3,)),  # Heading t values
+        "heading_t": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Heading t values
         # History of Previous Poses and their depth values
     })
     action_space = spaces.MultiDiscrete([3, 16])

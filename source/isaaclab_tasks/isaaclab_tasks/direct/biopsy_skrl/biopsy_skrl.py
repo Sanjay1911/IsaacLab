@@ -190,7 +190,7 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
         MultiCategoricalMixin.__init__(self, unnormalized_log_prob, reduction)
         #self.pointnet = PointNetExtractor(point_channel=3, output_dim=256)  # your observation must be [B, N, 3]
         self.actor = nn.Sequential(
-            nn.Linear(13, 128),  # 
+            nn.Linear(11, 128),  # 
             nn.ELU(),
             nn.Linear(128, 64),
             nn.ELU(),
@@ -260,7 +260,7 @@ class ValueModel(DeterministicMixin, Model):
         DeterministicMixin.__init__(self)
         self.net = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(13, 256),  # has to be 198 because of the Dict observation space (match len(states) in compute method)
+            nn.Linear(11, 256),  # has to be 198 because of the Dict observation space (match len(states) in compute method)
             nn.ELU(),
             nn.Linear(256, 128),
             nn.ELU(),
