@@ -497,9 +497,10 @@ class BiopsyDirectEnv(DirectRLEnv):
             twist_angles_deg = self.actions.float() * 22.5  # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
             print(f"Insertion depths: {insertion_depths}")
-            print(f"Twist angles (deg): {twist_angles_rad}, {twist_angles_rad.unsqueeze(-1)}, {twist_angles_rad.squeeze()}")
-            self.actions = torch.stack([insertion_depths, twist_angles_rad.squeeze()], dim=1)
-            # print(f"Updated actions: {self.actions}")
+            print(f"Twist angles (deg): {twist_angles_rad}")
+            self.actions = torch.stack([insertion_depths.view(-1), twist_angles_rad.view(-1)], dim=1)
+
+            print(f"Updated actions: {self.actions}")
         elif isinstance(self.single_action_space, gym.spaces.MultiDiscrete):
             # print(f"Picked actions (MultiDiscrete): {self.actions}")
             insertion_bins = self.actions[:, 0]
@@ -622,6 +623,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         )
         self.reset_start_positions(env_ids)
 
+        # Inside reset() or just before _get_observations()
+        insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device)
+        twist_angles_rad = torch.zeros((self.num_envs,), device=self.device)  # or any dummy twist
+        self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)  # Shape: [B, 2]
         # Reset tumor poses using sample_uniform
         tumor_world_poses = self.tumor.get_world_poses(env_ids)
         position, quaternion = tumor_world_poses
@@ -716,10 +721,23 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # --- Tumor geometry ---
         # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
-        obs = {"current_action": current_action, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt, "signed_delta_y": signed_delta_y, "signed_delta_z": signed_delta_z, "heading_y": heading_y, "heading_z": heading_z, "heading_t": heading_t}
-        # for k, v in obs.items():
-        #     print(f"Observation {k}: {v}, type: {type(v)}")
-        #     print(f"{k}: {v.shape}")
+        #obs = {"current_action": current_action, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt, "signed_delta_y": signed_delta_y, "signed_delta_z": signed_delta_z, "heading_y": heading_y, "heading_z": heading_z, "heading_t": heading_t}
+        obs = {
+            "current_action": self.actions[:, 1].unsqueeze(-1),  # Extract actual twist angle in radians
+            "normalized_depth_t": normalized_progress.unsqueeze(-1),       # from [B] → [B, 1]
+            "normalized_depth_t_ndt": normalized_progress_t_ndt.unsqueeze(-1),
+            "deviation_t": deviation.unsqueeze(-1),
+            "deviation_t_ndt": prev_deviation_t_ndt.unsqueeze(-1),
+            "signed_delta_y": signed_delta_y,  # already [B, 1]
+            "signed_delta_z": signed_delta_z,
+            "heading_y": heading_y,
+            "heading_z": heading_z,
+            "heading_t": heading_t,
+        }
+
+        for k, v in obs.items():
+            print(f"Observation {k}: {v}, type: {type(v)}")
+            print(f"{k}: {v.shape}")
 
         return {"policy": obs}
 
