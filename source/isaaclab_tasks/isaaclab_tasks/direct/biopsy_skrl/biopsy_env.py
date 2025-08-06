@@ -354,11 +354,11 @@ class BiopsyDirectEnv(DirectRLEnv):
             for j in range(len(self.start_positions[0])):
                 self.start_poses[i, j, :3] = torch.tensor(self.start_positions[i][j], device='cuda:0', dtype=torch.float32)
                 self.start_poses[i, j, 3:] = torch.tensor(self.start_quaternions[i][j], device='cuda:0', dtype=torch.float32)
-        for i in range(self.num_envs):
-            print(f"Env {i}: unique poses = {len(set(tuple(p.tolist()) for p in self.start_poses[i]))}")
-        for i in range(1):  # check env 0
-            for j in range(10):  # assuming 10 poses
-                print(f"start_poses[{i}, {j}] = {self.start_poses[i, j]}")
+        # for i in range(self.num_envs):
+        #     print(f"Env {i}: unique poses = {len(set(tuple(p.tolist()) for p in self.start_poses[i]))}")
+        # for i in range(1):  # check env 0
+        #     for j in range(10):  # assuming 10 poses
+        #         print(f"start_poses[{i}, {j}] = {self.start_poses[i, j]}")
 
         # add an offset to the start positions (tensor) so that its close to the skull
         
@@ -384,7 +384,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 start_quat = torch.tensor(self.start_quaternions[env_id][0], device=self.device, dtype=torch.float32)  # Tensor [4]
                 root_state[env_id, :3] = start_pose
                 root_state[env_id, 3:7] = start_quat
-                print(f"Env {env_id} → Pose: {start_pose.cpu().numpy()}, Quat: {start_quat.cpu().numpy()}")
+                # print(f"Env {env_id} → Pose: {start_pose.cpu().numpy()}, Quat: {start_quat.cpu().numpy()}")
             except Exception as e:
                 print(f"[ERROR] Failed to set needle for env {env_id}: {e}")
 
@@ -476,7 +476,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         # print(f"[DEBUG-STEP] Pre-physics steps called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         self.actions = actions.clone() 
-        print(f"Actions received: {type(self.single_action_space)}")
+        # print(f"Actions received: {type(self.single_action_space)}")
         if isinstance(self.single_action_space, gym.spaces.Box):
             low = torch.tensor(self.single_action_space.low, device=self.device)
             high = torch.tensor(self.single_action_space.high, device=self.device)
@@ -491,7 +491,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             # self.actions = torch.clamp(self.actions, low, high)
             print(f"Scaled actions: {self.actions}, {self.new_actions}")
         elif isinstance(self.single_action_space, gym.spaces.MultiDiscrete):
-            print(f"Picked actions (MultiDiscrete): {self.actions}")
+            # print(f"Picked actions (MultiDiscrete): {self.actions}")
             insertion_bins = self.actions[:, 0]
             twist_bins = self.actions[:, 1]
 
@@ -500,14 +500,14 @@ class BiopsyDirectEnv(DirectRLEnv):
                 device=self.device,
                 dtype=torch.float32
             )
-            insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device, dtype=torch.float32)  # Default depth
+            #insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device, dtype=torch.float32)  # Default depth
             twist_angles_deg = twist_bins.float() * 22.5  # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
-            print(f"Insertion depths: {insertion_depths}")
-            print(f"Twist angles (deg): {twist_angles_deg}")
-            print(f"Twist angles (rad): {twist_angles_rad}")
+            # print(f"Insertion depths: {insertion_depths}")
+            # print(f"Twist angles (deg): {twist_angles_deg}")
+            # print(f"Twist angles (rad): {twist_angles_rad}")
             self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)
-            print(f"Updated actions: {self.actions}")
+            # print(f"Updated actions: {self.actions}")
 
     def _apply_action(self):
         # print(f"[DEBUG-STEP] Apply action called at time step: {self.common_step_counter}, {self._sim_step_counter}")
@@ -622,7 +622,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             updated_position = position + sampled_offset
             # stack updated poses with quaternions from tumor_world_poses
             self.tumor.set_world_poses(positions=updated_position, orientations=quaternion, indices=env_ids)
-            print(f"[INFO] Tumor poses reset success for env_ids: {env_ids}")
+            # print(f"[INFO] Tumor poses reset success for env_ids: {env_ids}")
         except Exception as e:
             omni.log.error(f"Error sampling tumor poses due to: {e}")
         omni.log.info(f"Calling _reset_idx for env_ids: {env_ids}")
@@ -638,11 +638,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         # print(f"[DEBUG-STEP] Dones called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         _, _, perpendicular_vector, path_length, d_ttip_tumor, d_start_tumor, projected_dist = self.calc_normalized_progress()
         tumor_reached = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).squeeze(-1)  # shape: (B,)
-        print(f"[DEBUG] Tumor reached: {tumor_reached}")
+        # print(f"[DEBUG] Tumor reached: {tumor_reached}")
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)  # already shape: (B,)
         crossed_path_length = (projected_dist > path_length) 
         overshoot = (d_ttip_tumor > d_start_tumor).squeeze(-1)  # shape: (B,)
-        print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}, crossed path length ? : {crossed_path_length}, overshoot ? : {overshoot}")
+        # print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}, crossed path length ? : {crossed_path_length}, overshoot ? : {overshoot}")
         truncated_condition = time_out | (crossed_path_length & overshoot)
         #for i in range(self.num_envs):
             #print("Saving plot")
@@ -1009,7 +1009,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             tumor_centroid = torch.tensor(tumor_data["tumor_centroid"], dtype=torch.float32, device=self.device)
             self.shuffled_tumor_centroids[env_id] = tumor_centroid  #+ offset
             self.tumor.set_local_poses(tumor_pos.unsqueeze(0), tumor_quat.unsqueeze(0), [env_id])
-            print(f"Set tumor position for env {env_id}: {tumor_pos}")
+            # print(f"Set tumor position for env {env_id}: {tumor_pos}")
 
     def save_point_cloud_ply(self, filename, points: np.ndarray):
         with open(filename, 'w') as f:
@@ -1285,7 +1285,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                     print(f"[ERROR] No points found in mesh at {prim_path}")
                     continue
                 elif original_np.size:
-                    print(f"[DEBUG] Original points shape: {original_np.shape} at {prim_path}")
+                    # print(f"[DEBUG] Original points shape: {original_np.shape} at {prim_path}")
                     self.brain_shift(points_attr, original_np, i)
 
         except Exception as e:
