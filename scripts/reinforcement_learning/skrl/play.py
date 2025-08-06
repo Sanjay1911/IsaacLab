@@ -113,22 +113,22 @@ def main():
         experiment_cfg = load_cfg_from_registry(args_cli.task, "skrl_cfg_entry_point")
 
     # specify directory for logging experiments (load checkpoint)
-    log_root_path = os.path.join("logs", "skrl", experiment_cfg["agent"]["experiment"]["directory"])
-    log_root_path = os.path.abspath(log_root_path)
-    print(f"[INFO] Loading experiment from directory: {log_root_path}")
-    # get checkpoint path
-    if args_cli.use_pretrained_checkpoint:
-        resume_path = get_published_pretrained_checkpoint("skrl", args_cli.task)
-        if not resume_path:
-            print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
-            return
-    elif args_cli.checkpoint:
-        resume_path = os.path.abspath(args_cli.checkpoint)
-    else:
-        resume_path = get_checkpoint_path(
-            log_root_path, run_dir=f".*_{algorithm}_{args_cli.ml_framework}", other_dirs=["checkpoints"]
-        )
-    log_dir = os.path.dirname(os.path.dirname(resume_path))
+    # log_root_path = os.path.join("logs", "skrl", experiment_cfg["agent"]["experiment"]["directory"])
+    # log_root_path = os.path.abspath(log_root_path)
+    # print(f"[INFO] Loading experiment from directory: {log_root_path}")
+    # # get checkpoint path
+    # if args_cli.use_pretrained_checkpoint:
+    #     resume_path = get_published_pretrained_checkpoint("skrl", args_cli.task)
+    #     if not resume_path:
+    #         print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
+    #         return
+    # elif args_cli.checkpoint:
+    #     resume_path = os.path.abspath(args_cli.checkpoint)
+    # else:
+    #     resume_path = get_checkpoint_path(
+    #         log_root_path, run_dir=f".*_{algorithm}_{args_cli.ml_framework}", other_dirs=["checkpoints"]
+    #     )
+    # log_dir = os.path.dirname(os.path.dirname(resume_path))
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
