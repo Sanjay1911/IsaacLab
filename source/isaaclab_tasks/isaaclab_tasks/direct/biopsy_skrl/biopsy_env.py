@@ -421,6 +421,13 @@ class BiopsyDirectEnv(DirectRLEnv):
                 print(f"[ERROR] Failed to extract for env {env_id}: {e}")
         if not len(self.brain_shift_data):
             raise ValueError("Not enough shift steps in brain_shift_data.")
+        
+        try:
+            print(f"[INFO] Brain shift data for envs: {len(self.brain_shift_data)}")
+            self.get_vessel_points()
+        except Exception as e:
+            omni.log.error(f"Error getting vessel points: {e}")
+            traceback.print_exc()
 
         self.stage = stage_utils.get_current_stage()
         self.env_ids = torch.arange(self.num_envs, device=self.device)
@@ -698,13 +705,6 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # --- Tumor geometry ---
         # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
-        # Now safe to log shape
-        omni.log.info(f"normalized_progress shape: {normalized_progress.shape}")
-        omni.log.info(f"deviation shape: {deviation.shape}")
-        omni.log.info(f"current action shape: {current_action.shape}")
-        omni.log.info(f"Shape of signed delta_y: {signed_delta_y.shape}, signed_delta_z: {signed_delta_z.shape}")
-        omni.log.info(f"Shape of heading_y: {heading_y.shape}, heading_z: {heading_z.shape}")
-        omni.log.info(f"Shape of heading: {heading_t.shape}")
         obs = {"current_action": current_action, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt, "signed_delta_y": signed_delta_y, "signed_delta_z": signed_delta_z, "heading_y": heading_y, "heading_z": heading_z, "heading_t": heading_t}
         # for k, v in obs.items():
         #     print(f"Observation {k}: {v}, type: {type(v)}")
@@ -1249,18 +1249,18 @@ class BiopsyDirectEnv(DirectRLEnv):
         new_np = self.brain_shift_data[env_id][0]
         print(f"[INFO] [Env {env_id}] Original points shape: {original_np.shape}, New points shape: {new_np.shape}")
         assert new_np.shape == original_np.shape, f"Shape mismatch at env {env_id} ({new_np.shape} vs {original_np.shape})"
-        usd_pts = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in new_np]
-        points_attr.Set(usd_pts)
-        prim_path = points_attr.GetPrim().GetPath().pathString
-        print(f"[INFO] [Env {env_id}] Updated mesh points at {prim_path}")
-        #self.raycast_vessel.update_dynamic_mesh_for_env(prim_path, new_np, env_id=0)
-        stage_utils.update_stage()
-        displacement = np.linalg.norm(new_np - original_np, axis=1)
-        changed_mask = displacement > 1e-5
-        changed_percent = 100.0 * np.sum(changed_mask) / displacement.shape[0]
-        print(f"[INFO] [Env {env_id}] Vertices changed: {changed_percent:.2f}%")
-        print(f"[INFO] [Env {env_id}] Mean displacement: {np.mean(displacement):.6f}")
-        print(f"[INFO] [Env {env_id}] Max displacement:  {np.max(displacement):.6f}")
+        # usd_pts = [Gf.Vec3f(float(v[0]), float(v[1]), float(v[2])) for v in new_np]
+        # points_attr.Set(usd_pts)
+        # prim_path = points_attr.GetPrim().GetPath().pathString
+        # print(f"[INFO] [Env {env_id}] Updated mesh points at {prim_path}")
+        # #self.raycast_vessel.update_dynamic_mesh_for_env(prim_path, new_np, env_id=0)
+        # stage_utils.update_stage()
+        # displacement = np.linalg.norm(new_np - original_np, axis=1)
+        # changed_mask = displacement > 1e-5
+        # changed_percent = 100.0 * np.sum(changed_mask) / displacement.shape[0]
+        # print(f"[INFO] [Env {env_id}] Vertices changed: {changed_percent:.2f}%")
+        # print(f"[INFO] [Env {env_id}] Mean displacement: {np.mean(displacement):.6f}")
+        # print(f"[INFO] [Env {env_id}] Max displacement:  {np.max(displacement):.6f}")
 
     def get_vessel_points(self):
         try:
