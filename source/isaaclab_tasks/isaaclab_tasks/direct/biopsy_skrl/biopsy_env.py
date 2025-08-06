@@ -769,10 +769,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         - penalty for high real-time collision score
         + bonus for being inside tumor
         """
-        reward_progress = progress_t - progress_t_dt
-        reward_deviation = torch.exp(-self.K_DEV * deviation_t ** 2)
-        reward_reached_tumor = (progress_t < self.TUMOR_REACH_THRESHOLD)
-        reward_action = torch.norm(action, dim=-1)  # L2 norm of the action vector
+        reward_progress = (progress_t - progress_t_dt).squeeze(-1)
+        reward_deviation = torch.exp(-self.K_DEV * deviation_t.squeeze(-1) ** 2)
+        reward_reached_tumor = (progress_t.squeeze(-1) < self.TUMOR_REACH_THRESHOLD).float()
+        reward_action = torch.norm(action, dim=-1)  # already shape [B]
+
         reward = (
             (self.cfg.w_progress * reward_progress)
             + (self.cfg.w_deviation * reward_deviation)
