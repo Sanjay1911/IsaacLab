@@ -490,6 +490,16 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.new_actions = 0.5 * (self.actions + 1.0) * (high - low) + low
             # self.actions = torch.clamp(self.actions, low, high)
             print(f"Scaled actions: {self.actions}, {self.new_actions}")
+        elif isinstance(self.single_action_space, gym.spaces.Discrete):
+            print(f"Picked actions (Discrete): {self.actions}")
+            # For discrete actions, we assume the action is an index into a lookup table
+            insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device, dtype=torch.float32)  # Default depth
+            twist_angles_deg = self.actions.float() * 22.5  # 0.0 degrees for no twist
+            twist_angles_rad = torch.deg2rad(twist_angles_deg)
+            print(f"Insertion depths: {insertion_depths}")
+            print(f"Twist angles (deg): {twist_angles_rad}, {twist_angles_rad.unsqueeze(-1)}, {twist_angles_rad.squeeze()}")
+            self.actions = torch.stack([insertion_depths, twist_angles_rad.squeeze()], dim=1)
+            # print(f"Updated actions: {self.actions}")
         elif isinstance(self.single_action_space, gym.spaces.MultiDiscrete):
             # print(f"Picked actions (MultiDiscrete): {self.actions}")
             insertion_bins = self.actions[:, 0]

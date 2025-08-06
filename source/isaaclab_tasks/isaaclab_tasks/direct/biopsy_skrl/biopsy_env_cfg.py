@@ -88,7 +88,7 @@ class DictMultiDiscreteEnvCfg(BiopsyDirectEnvCfg):
 
     # spaces
     observation_space = spaces.Dict({
-        "current_action": spaces.MultiDiscrete([3, 16]),  # Current action values (e.g., insertion and twist)
+        "current_action": spaces.Discrete(16),  # Current action values (e.g., insertion and twist) #TODO changed 
         "normalized_depth_t": spaces.Box(low=0.0, high=1.0, shape=(1,)),  # Normalized depth values for each env
         "normalized_depth_t_ndt": spaces.Box(low=0.0, high=1.0, shape=(1,)), 
         "deviation_t": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Deviation values for each env
@@ -100,4 +100,4 @@ class DictMultiDiscreteEnvCfg(BiopsyDirectEnvCfg):
         "heading_t": spaces.Box(low=-np.inf, high=np.inf, shape=(1,)),  # Heading t values
         # History of Previous Poses and their depth values
     })
-    action_space = spaces.MultiDiscrete([3, 16])
+    action_space = spaces.Discrete(16)
