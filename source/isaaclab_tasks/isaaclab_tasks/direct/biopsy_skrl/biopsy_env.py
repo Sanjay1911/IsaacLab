@@ -500,6 +500,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 device=self.device,
                 dtype=torch.float32
             )
+            insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device, dtype=torch.float32)  # Default depth
             twist_angles_deg = twist_bins.float() * 22.5  # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
             print(f"Insertion depths: {insertion_depths}")
