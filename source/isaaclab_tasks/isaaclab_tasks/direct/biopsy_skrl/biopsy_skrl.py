@@ -15,7 +15,7 @@ from skrl.utils.spaces.torch import unflatten_tensorized_space  # https://skrl.r
 from gymnasium import spaces
 # seed for reproducibility
 set_seed(42)  
-DEBUG = True  
+DEBUG = False  
 
 class PointNetExtractor(nn.Module):
     def __init__(self, point_channel=3, output_dim=256):
@@ -67,8 +67,8 @@ class ContinouosActionPolicy(GaussianMixin, Model):
         states = inputs["states"]
         #print("States keys:", states, len(states[0]))  # Debugging line to check available keys
         states = unflatten_tensorized_space(self.observation_space, states)  # https://github.com/Toni-SM/skrl/discussions/205
-        print("Unflattened states shape:", {k: v.shape for k, v in states.items()})  # Debugging line to check shapes
-        print("States keys:", states.keys())  # Debugging line to check available keys
+        # print("Unflattened states shape:", {k: v.shape for k, v in states.items()})  # Debugging line to check shapes
+        # print("States keys:", states.keys())  # Debugging line to check available keys
         # Process raycaster point cloud [B, 64, 3]
         pcd = states["raycaster"]
         if pcd.ndim == 2:
@@ -199,7 +199,7 @@ class MultiDiscreteActionPolicy(MultiCategoricalMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        print("States keys:", states, len(states[0]))  # Debugging line to check available keys - len(states[0]) = 64*3 + 1 + 1 + 2 + 1 + 1= 198
+        # print("States keys:", states, len(states[0]))  # Debugging line to check available keys - len(states[0]) = 64*3 + 1 + 1 + 2 + 1 + 1= 198
         states = unflatten_tensorized_space(self.observation_space, states)  # https://github.com/Toni-SM/skrl/discussions/205
         #print("Unflattened states shape:", {k: v.shape for k, v in states.items()})  # Debugging line to check shapes
         #print("States keys:", states.keys())
@@ -295,10 +295,10 @@ memory = RandomMemory(memory_size=16, num_envs=env.num_envs, device=device)
 models = {}
 
 if isinstance(env.action_space, spaces.Discrete):
-    print("Using CategoricalMixin for discrete action space")
+    # print("Using CategoricalMixin for discrete action space")
     models["policy"] = DiscreteActionPolicy(env.observation_space, env.action_space, device)
 elif isinstance(env.action_space, spaces.MultiDiscrete):
-    print("Using MultiCategoricalMixin for MultiDiscrete action space")
+    # print("Using MultiCategoricalMixin for MultiDiscrete action space")
     models["policy"] = MultiDiscreteActionPolicy(env.observation_space, env.action_space, device)
 
 models["value"] = ValueModel(env.observation_space, env.action_space, device)  # separate value model
