@@ -447,7 +447,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         # Rewards
         self.potentials = torch.zeros(self.num_envs, dtype=torch.float32, device=self.sim.device)
         self.prev_potentials = torch.zeros_like(self.potentials)
-
+        self.d_ttip_tumor = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)  # Distance from tooltip to tumor
         self.metrics_log = {
             "distance": [[] for _ in range(self.num_envs)],
             "normalized_progress": [[] for _ in range(self.num_envs)],
@@ -622,8 +622,6 @@ class BiopsyDirectEnv(DirectRLEnv):
             dtype=torch.int32
         )
         self.reset_start_positions(env_ids)
-
-        # Inside reset() or just before _get_observations()
         insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device)
         twist_angles_rad = torch.zeros((self.num_envs,), device=self.device)  # or any dummy twist
         self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)  # Shape: [B, 2]
@@ -683,6 +681,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         # print(f"[DEBUG-STEP] Observations called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         normalized_progress, deviation, perpendicular_vector, path_length, d_ttip_tumor, d_start_tumor, projected_dist = self.calc_normalized_progress()
+        self.d_ttip_tumor = d_ttip_tumor.clone()  # Store distance from tooltip to tumor
         normalized_progress_t_ndt = self.prev_normalized_progress.clone()
         prev_deviation_t_ndt = self.prev_deviation.clone()
 
@@ -751,17 +750,17 @@ class BiopsyDirectEnv(DirectRLEnv):
         obs = self._get_observations()["policy"]
         progress_t = obs["normalized_depth_t"]             
         progress_t_dt = obs["normalized_depth_t_ndt"]      
-        deviation_t = obs["deviation_t"]                   
-        deviation_t_dt = obs["deviation_t_ndt"]            
-        action = obs["current_action"]                     
-        total_reward = self.compute_reward(progress_t, progress_t_dt, deviation_t, deviation_t_dt, action)
+        deviation_t = obs["deviation_t"]                          
+        action = obs["current_action"]      
+        d_ttip_tumor = self.d_ttip_tumor.clone()  # Distance from tooltip to tumor               
+        total_reward = self.compute_reward(progress_t, progress_t_dt, deviation_t, action, d_ttip_tumor)
         return total_reward
 
     def _get_states(self):  # TODO: States for Asymmetric RL
         pass
 
     #@torch.jit.script
-    def compute_reward(self, progress_t, progress_t_dt, deviation_t, deviation_t_dt, action):  # TODO: actual Rewards
+    def compute_reward(self, progress_t, progress_t_dt, deviation_t, action, d_ttip_tumor):  # TODO: actual Rewards
         """
         Reward structure:
         + reward for being closer to tumor
@@ -771,16 +770,17 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         reward_progress = (progress_t - progress_t_dt).squeeze(-1)
         reward_deviation = torch.exp(-self.K_DEV * deviation_t.squeeze(-1) ** 2)
-        reward_reached_tumor = (progress_t.squeeze(-1) < self.TUMOR_REACH_THRESHOLD).float()
+        reward_reached_tumor = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).float()
         reward_action = torch.norm(action, dim=-1)  # already shape [B]
 
         reward = (
             (self.cfg.w_progress * reward_progress)
             + (self.cfg.w_deviation * reward_deviation)
-            + (self.cfg.w_inside_tumor * reward_reached_tumor.float())
+            + (self.cfg.w_inside_tumor * reward_reached_tumor)
             - (self.cfg.w_action * reward_action)
         )
         reward = torch.clip(reward, min=-100.0, max=100.0)
+        print(f"[DEBUG] reward shape: {reward.shape}")
         return reward  # ensure shape [B]
 
     # ## --------------------------------------- ## #
