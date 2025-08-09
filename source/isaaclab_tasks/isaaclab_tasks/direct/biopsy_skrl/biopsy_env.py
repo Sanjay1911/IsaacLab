@@ -108,13 +108,13 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
-    skull = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Skull",
-        spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
-    )
+    # skull = AssetBaseCfg(
+    #     prim_path="{ENV_REGEX_NS}/Skull",
+    #     spawn=sim_utils.MeshFileCfg(
+    #         file_path="/home/czlocal/sanjay_isaac/curobo/src/curobo/content/assets/scene/skull.obj"
+    #     ),
+    #     init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    # )
 
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
@@ -228,7 +228,7 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     )
 
     #scene
-    scene: MinimalSceneCfg = MinimalSceneCfg(num_envs=1, env_spacing=0.5, replicate_physics=False)
+    scene: MinimalSceneCfg = MinimalSceneCfg(num_envs=1, env_spacing=0.2, replicate_physics=False)
 
     action_scale = 0.001
     dof_velocity_scale = 0.1
@@ -422,12 +422,12 @@ class BiopsyDirectEnv(DirectRLEnv):
         if not len(self.brain_shift_data):
             raise ValueError("Not enough shift steps in brain_shift_data.")
         
-        try:
-            print(f"[INFO] Brain shift data for envs: {len(self.brain_shift_data)}")
-            self.get_vessel_points()
-        except Exception as e:
-            omni.log.error(f"Error getting vessel points: {e}")
-            traceback.print_exc()
+        # try:   # TODO Uncomment if needed
+        #     print(f"[INFO] Brain shift data for envs: {len(self.brain_shift_data)}")
+        #     self.get_vessel_points()
+        # except Exception as e:
+        #     omni.log.error(f"Error getting vessel points: {e}")
+        #     traceback.print_exc()
 
         self.stage = stage_utils.get_current_stage()
         self.env_ids = torch.arange(self.num_envs, device=self.device)
@@ -480,7 +480,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         if isinstance(self.single_action_space, gym.spaces.Box):
             low = torch.tensor(self.single_action_space.low, device=self.device)
             high = torch.tensor(self.single_action_space.high, device=self.device)
-            print(f"Picked actions: {self.actions}")
+            # print(f"Picked actions: {self.actions}")
             # Scale action values to the range of the action space from [-1, 1] to [low, high] using the formula:
             # scaled_action = ((x-a)/(b-a)) * (d-c) + c where x belongs to [a, b] and scaled_action belongs to [c, d]
             # Here, a = -1, b = 1, c = low, d = high
@@ -491,16 +491,16 @@ class BiopsyDirectEnv(DirectRLEnv):
             # self.actions = torch.clamp(self.actions, low, high)
             print(f"Scaled actions: {self.actions}, {self.new_actions}")
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
-            print(f"Picked actions (Discrete): {self.actions}")
+            # print(f"Picked actions (Discrete): {self.actions}")
             # For discrete actions, we assume the action is an index into a lookup table
             insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device, dtype=torch.float32)  # Default depth
             twist_angles_deg = self.actions.float() * 22.5  # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
-            print(f"Insertion depths: {insertion_depths}")
-            print(f"Twist angles (deg): {twist_angles_rad}")
+            # print(f"Insertion depths: {insertion_depths}")
+            # print(f"Twist angles (deg): {twist_angles_rad}")
             self.actions = torch.stack([insertion_depths.view(-1), twist_angles_rad.view(-1)], dim=1)
 
-            print(f"Updated actions: {self.actions}")
+            # print(f"Updated actions: {self.actions}")
         elif isinstance(self.single_action_space, gym.spaces.MultiDiscrete):
             # print(f"Picked actions (MultiDiscrete): {self.actions}")
             insertion_bins = self.actions[:, 0]
@@ -560,7 +560,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         new_root_state[:, 3:7] = new_quat
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
-        self._needle.reset()
+        #self._needle.reset()
         # print(f"[DEBUG-STEP] Action applied at time step: {self.common_step_counter}")
         if not self.cfg.viewer.headless:
             for i in range(self.num_envs):
@@ -599,7 +599,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.tooltip_pos[env_id] = pos
             self.tooltip_rot[env_id] = quat
 
-            print(f"[RESET] Env {env_id} start → Pose: {pos.cpu().numpy()}, Quat: {quat.cpu().numpy()}")
+            # print(f"[RESET] Env {env_id} start → Pose: {pos.cpu().numpy()}, Quat: {quat.cpu().numpy()}")
 
         self._needle.write_root_pose_to_sim(root_state[:, :7])
         self._needle.reset()
@@ -616,7 +616,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         self.active_path_index[env_ids] = torch.randint(
-            high=10,
+            high=len(self.start_positions[0]),
             size=(len(env_ids),),
             device=self.device,
             dtype=torch.int32
@@ -625,118 +625,116 @@ class BiopsyDirectEnv(DirectRLEnv):
         insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device)
         twist_angles_rad = torch.zeros((self.num_envs,), device=self.device)  # or any dummy twist
         self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)  # Shape: [B, 2]
-        # Reset tumor poses using sample_uniform
-        tumor_world_poses = self.tumor.get_world_poses(env_ids)
-        position, quaternion = tumor_world_poses
-        omni.log.info(f"Initial tumor world poses: {tumor_world_poses}")
-        try:
-            omni.log.info(f"Resetting tumor poses for env_ids: {env_ids}, Tumor world poses: {tumor_world_poses[0]}")
-            sampled_offset = sample_uniform(lower=-0.001, upper=0.001, size=(len(env_ids), 3), device=self.device)
-            updated_position = position + sampled_offset
-            # stack updated poses with quaternions from tumor_world_poses
-            self.tumor.set_world_poses(positions=updated_position, orientations=quaternion, indices=env_ids)
-            # print(f"[INFO] Tumor poses reset success for env_ids: {env_ids}")
-        except Exception as e:
-            omni.log.error(f"Error sampling tumor poses due to: {e}")
-        omni.log.info(f"Calling _reset_idx for env_ids: {env_ids}")
+        # # Reset tumor poses using sample_uniform TODO: Uncomment if needed
+        # tumor_world_poses = self.tumor.get_world_poses(env_ids)
+        # position, quaternion = tumor_world_poses
+        # omni.log.info(f"Initial tumor world poses: {tumor_world_poses}")
+        # try:
+        #     omni.log.info(f"Resetting tumor poses for env_ids: {env_ids}, Tumor world poses: {tumor_world_poses[0]}")
+        #     sampled_offset = sample_uniform(lower=-0.001, upper=0.001, size=(len(env_ids), 3), device=self.device)
+        #     updated_position = position + sampled_offset
+        #     # stack updated poses with quaternions from tumor_world_poses
+        #     self.tumor.set_world_poses(positions=updated_position, orientations=quaternion, indices=env_ids)
+        #     # print(f"[INFO] Tumor poses reset success for env_ids: {env_ids}")
+        # except Exception as e:
+        #     omni.log.error(f"Error sampling tumor poses due to: {e}")
+        # omni.log.info(f"Calling _reset_idx for env_ids: {env_ids}")
         self._compute_intermediate_values(env_ids)
 
     def _get_dones(self):
         """
-        Get the done flags for the environment. This includes:
-        - Strong Collision with the vessels (TODO)
-        - Time out if the episode length exceeds the maximum
-        - Tooltip reaches the tumor
+        Success  = Tooltip is close to the tumor (≤ TUMOR_REACH_THRESHOLD in meters)
+                AND aligned with the end of the path (s ≈ 1 ± tolerance).
+        Truncate = Timeout OR overshoot beyond valid path range.
         """
-        # print(f"[DEBUG-STEP] Dones called at time step: {self.common_step_counter}, {self._sim_step_counter}")
-        _, _, perpendicular_vector, path_length, d_ttip_tumor, d_start_tumor, projected_dist = self.calc_normalized_progress()
-        tumor_reached = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).squeeze(-1)  # shape: (B,)
-        # print(f"[DEBUG] Tumor reached: {tumor_reached}")
-        time_out = (self.episode_length_buf >= self.max_episode_length - 1)  # already shape: (B,)
-        crossed_path_length = (projected_dist > path_length) 
-        overshoot = (d_ttip_tumor > d_start_tumor).squeeze(-1)  # shape: (B,)
-        # print(f"[DEBUG] reached ? : {tumor_reached}, time out ? : {time_out}, crossed path length ? : {crossed_path_length}, overshoot ? : {overshoot}")
-        truncated_condition = time_out | (crossed_path_length & overshoot)
-        #for i in range(self.num_envs):
-            #print("Saving plot")
-            #self.save_episode_plot(env_id=i, step_id=self.common_step_counter)
-        # if tumor_reached.any() or truncated_condition.any():
-        #     for i in range(self.num_envs):
-        #         #if tumor_reached[i].item() or truncated_condition[i].item():
-        #             #self.save_episode_plot(env_id=i, step_id=self.common_step_counter)
-        #         if tumor_reached[i].item():
-        #             print(f"[INFO] Env {i} reached the tumor.")
-        #         if truncated_condition[i].item():
-        #             print(f"[INFO] Env {i} is truncated due to time out or overshoot.")
-        return tumor_reached, truncated_condition
+        (normalized_progress,
+        deviation,
+        perpendicular_vector,
+        path_length,
+        d_ttip_tumor,
+        d_start_tumor,
+        projected_dist) = self.calc_normalized_progress()
+        eps = 1e-8
+        s_unclamped = projected_dist / (path_length + eps) 
+        dist_thresh = self.TUMOR_REACH_THRESHOLD      
+        s_tol = getattr(self, "S_PROGRESS_TOLERANCE", 1e-3)  
+        success = (
+            (d_ttip_tumor <= dist_thresh) &
+            (s_unclamped >= 1.0 - s_tol) &
+            (s_unclamped <= 1.0 + s_tol)
+        )
+        time_out = (self.episode_length_buf >= self.max_episode_length - 1)
+        overshoot_positive = s_unclamped > (1.0 + s_tol)
+        overshoot_negative = s_unclamped < (0.0 - s_tol)
+        truncated = (~success) & (time_out | overshoot_positive | overshoot_negative)
+        return success, truncated
+
+
 
     def _get_observations(self):
         """
         Get the observations for the environment. This includes:
         - Tooltip Pose
         - Normalized Depth to Tumor at time-step t and t-dt
-        - Direction to Tumor Centroid
-        - Downsampled PCD from RayCast Sensor
-        - Previous Action
+        - Direction to Tumor Centroid (via straight-line path basis)
+        - Signed lateral offsets (Y/Z) to the path
+        - Heading components (t, y, z)
+        - Previous Action (twist angle)
         """
-        # print(f"[DEBUG-STEP] Observations called at time step: {self.common_step_counter}, {self._sim_step_counter}")
-        normalized_progress, deviation, perpendicular_vector, path_length, d_ttip_tumor, d_start_tumor, projected_dist = self.calc_normalized_progress()
-        self.d_ttip_tumor = d_ttip_tumor.clone()  # Store distance from tooltip to tumor
+        # Compute straight-line progress and geometry (analytic)
+        (normalized_progress,
+        deviation,
+        perpendicular_vector,
+        path_length,
+        d_ttip_tumor,
+        d_start_tumor,
+        projected_dist) = self.calc_normalized_progress()
+
+        self.d_ttip_tumor = d_ttip_tumor.clone()
+
         normalized_progress_t_ndt = self.prev_normalized_progress.clone()
         prev_deviation_t_ndt = self.prev_deviation.clone()
-
         self.prev_normalized_progress = normalized_progress.detach()
         self.prev_deviation = deviation.detach()
 
-        start_pose = self.get_start_pose_active(num_envs=self.num_envs)       
-        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor)
-        tip_positions = self.tool_tip_pos                                      
-        target_idx, target_pose, next_pos = self.find_closest_path_index(tip_positions, prior_paths)
-        path_vec = F.normalize(next_pos - target_pose[:, :3, 3], dim=-1)      
-        u_y, u_z = self.compute_basis(path_vec) 
-        signed_delta_y = torch.sum(perpendicular_vector * u_y, dim=-1, keepdim=True)  # scalar
-        signed_delta_z = torch.sum(perpendicular_vector * u_z, dim=-1, keepdim=True)  # scalar
+        path_vec = self.path_direction                                
+        u_y, u_z = self.compute_basis(path_vec)                       
+
+        signed_delta_y = torch.sum(perpendicular_vector * u_y, dim=-1, keepdim=True)
+        signed_delta_z = torch.sum(perpendicular_vector * u_z, dim=-1, keepdim=True)
         omni.log.info(f"Signed Delta Y: {signed_delta_y}, Signed Delta Z: {signed_delta_z}")
+
+        # Heading components between t-dt and t
         current_action = self.actions.clone()
-        ttip_pos_t_ndt = self.prev_tooltip_pos.clone()             
-        self.prev_tooltip_pos = self.tool_tip_pos.detach()          
-        delta = self.tool_tip_pos - ttip_pos_t_ndt                   
-        norms = torch.norm(delta, dim=-1, keepdim=True) + 1e-8       
-        heading = delta / norms                                    
-        heading = torch.where(norms > 1e-6, heading, torch.zeros_like(heading))
-        heading_t = torch.sum(heading * path_vec, dim=-1, keepdim=True)  # scalar
+        ttip_pos_t_ndt = self.prev_tooltip_pos.clone()
+        self.prev_tooltip_pos = self.tool_tip_pos.detach()
+
+        delta = self.tool_tip_pos - ttip_pos_t_ndt                     
+        norms = torch.norm(delta, dim=-1, keepdim=True) + 1e-8
+        heading = torch.where(norms > 1e-6, delta / norms, torch.zeros_like(delta))  
+
+        heading_t = torch.sum(heading * path_vec, dim=-1, keepdim=True)  
         omni.log.info(f"Tooltip position at t: {self.tool_tip_pos}")
         omni.log.info(f"Tooltip position at t-dt: {ttip_pos_t_ndt}")
         omni.log.info(f"Heading at t: {heading_t}")
-        heading_y = torch.sum(heading * u_y, dim=-1, keepdim=True)
-        heading_z = torch.sum(heading * u_z, dim=-1, keepdim=True)
+
+        heading_y = torch.sum(heading * u_y, dim=-1, keepdim=True)     
+        heading_z = torch.sum(heading * u_z, dim=-1, keepdim=True)    
         omni.log.info(f"Heading Y: {heading_y}, Heading Z: {heading_z}")
-        # for i in range(self.num_envs):
-        #     self.metrics_log["normalized_progress"][i].append(normalized_progress[i].item())
-        #     self.metrics_log["deviation"][i].append(deviation[i].item())
-        #     self.metrics_log["distance"][i].append(d_ttip_tumor[i].item())
-        #     self.metrics_log["projected_dist"][i].append(projected_dist[i].item())
-        #     self.metrics_log["path_length"][i].append(path_length[i].item())
 
-        # --- Tumor geometry ---
-        # to_tumor_centroid = self.shuffled_tumor_centroids - self.tool_tip_pos ----> This can be used in reward calculation
-        #obs = {"current_action": current_action, "normalized_depth_t": normalized_progress, "normalized_depth_t_ndt": normalized_progress_t_ndt, "deviation_t": deviation, "deviation_t_ndt": prev_deviation_t_ndt, "signed_delta_y": signed_delta_y, "signed_delta_z": signed_delta_z, "heading_y": heading_y, "heading_z": heading_z, "heading_t": heading_t}
+        # --- Assemble observations ---
         obs = {
-            "current_action": self.actions[:, 1].unsqueeze(-1),  # Extract actual twist angle in radians
-            "normalized_depth_t": normalized_progress.unsqueeze(-1),       # from [B] → [B, 1]
+            "current_action": self.actions[:, 1].unsqueeze(-1),        # [B,1]
+            "normalized_depth_t": normalized_progress.unsqueeze(-1),   # [B,1]
             "normalized_depth_t_ndt": normalized_progress_t_ndt.unsqueeze(-1),
-            "deviation_t": deviation.unsqueeze(-1),
-            "deviation_t_ndt": prev_deviation_t_ndt.unsqueeze(-1),
-            "signed_delta_y": signed_delta_y,  # already [B, 1]
-            "signed_delta_z": signed_delta_z,
-            "heading_y": heading_y,
-            "heading_z": heading_z,
-            "heading_t": heading_t,
+            "deviation_t": deviation.unsqueeze(-1),                    # [B,1]
+            "deviation_t_ndt": prev_deviation_t_ndt.unsqueeze(-1),     # [B,1]
+            "signed_delta_y": signed_delta_y,                          # [B,1]
+            "signed_delta_z": signed_delta_z,                          # [B,1]
+            "heading_y": heading_y,                                    # [B,1]
+            "heading_z": heading_z,                                    # [B,1]
+            "heading_t": heading_t,                                    # [B,1]
         }
-
-        for k, v in obs.items():
-            print(f"Observation {k}: {v}, type: {type(v)}")
-            print(f"{k}: {v.shape}")
 
         return {"policy": obs}
 
@@ -780,7 +778,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             - (self.cfg.w_action * reward_action)
         )
         reward = torch.clip(reward, min=-100.0, max=100.0)
-        print(f"[DEBUG] reward shape: {reward.shape}")
+        # print(f"[DEBUG] reward shape: {reward.shape}")
         return reward  # ensure shape [B]
 
     # ## --------------------------------------- ## #
@@ -882,36 +880,73 @@ class BiopsyDirectEnv(DirectRLEnv):
         plt.savefig(fname)
         plt.close()
 
+
     def calc_normalized_progress(self):
-        # Needle Kinematics
-        root_state = self._needle.data.root_state_w.clone() 
-        self.tool_tip_pos = root_state[:, :3]  
-        self.tool_tip_rot = root_state[:, 3:7] 
-        start_pose = torch.stack([
-            self.start_positions_tensor[i, self.active_path_index[i]]
-            for i in range(self.num_envs)
-        ])
-        # Tumor Position and Orientation  
-        tumor_root_poses = self.tumor.get_world_poses(self.env_ids)  
-        tumor_pos, tumor_quat = tumor_root_poses
-        # Calculate normalized progress and deviation
-        d_ttip_tumor = torch.norm(self.tool_tip_pos - tumor_pos, dim=-1)  # distance from tooltip to tumor
-        d_startpos_tumor = torch.norm(start_pose - tumor_pos, dim=-1)  # distance from start position to tumor
-        tooltip_vec = self.tool_tip_pos - start_pose  
-        path_vector = tumor_pos - start_pose 
-        path_direction = F.normalize(path_vector, dim=-1)  # normalized direction vector from start to tumor
-        projected_dist = torch.sum(tooltip_vec * path_direction, dim=-1) 
-        path_length = torch.norm(path_vector, dim=-1)
-        normalized_progress = projected_dist / path_length
-        normalized_progress = torch.clamp(normalized_progress, 0.0, 1.0)
-        perpendicular_vec = tooltip_vec - (projected_dist.unsqueeze(-1) * path_direction)  # [B, 3]
-        deviation = torch.norm(perpendicular_vec, dim=-1)
-        omni.log.info(f"Deviation:{deviation}")
+        """
+            normalized_progress: [B] in [0,1]
+            deviation:           [B] shortest distance to the segment
+            perpendicular_vec:   [B,3] vector from closest point on segment to tooltip
+            path_length:         [B]
+            d_ttip_tumor:        [B] |tooltip - tumor|
+            d_startpos_tumor:    [B] |start - tumor|
+            projected_dist:      [B] signed projection length along the (unclamped) line
+            self.path_direction:           [B,3] (unit)
+            self.closest_point_on_path:    [B,3]
+        """
+        # Needle state
+        root_state = self._needle.data.root_state_w.clone()
+        self.tool_tip_pos = root_state[:, :3]      # [B,3]
+        self.tool_tip_rot = root_state[:, 3:7]     # [B,4]
+
+        # Start pose and tumor pose
+        start_pose = self.get_start_pose_active(num_envs=self.num_envs)       # [B,3]
+        tumor_pos, tumor_quat = self.tumor.get_world_poses(self.env_ids)      # [B,3], [B,4]
+
+        # Segment geometry
+        path_vector = tumor_pos - start_pose                                   # [B,3]
+        path_length = torch.norm(path_vector, dim=-1, keepdim=True) + 1e-8     # [B,1]
+        path_direction = path_vector / path_length                             # [B,3]
+
+        tooltip_vec = self.tool_tip_pos - start_pose                           # [B,3]
+        t = torch.sum(tooltip_vec * path_direction, dim=-1, keepdim=True)      # [B,1] 
+
+        # Clamp to the *segment* [0, |path|]
+        min_val = torch.zeros_like(t)  
+        t_clamped = torch.clamp(t, min=min_val, max=path_length)
+
+        # Closest point and perpendicular info
+        closest_point = start_pose + t_clamped * path_direction                # [B,3]
+        perpendicular_vec = self.tool_tip_pos - closest_point                  # [B,3]
+        deviation = torch.norm(perpendicular_vec, dim=-1)                      # [B]
+
+        # Progress in [0,1]
+        normalized_progress = torch.clamp((t / path_length).squeeze(-1), 0.0, 1.0)  # [B]
+
+        # Distances for logging/metrics
+        d_ttip_tumor = torch.norm(self.tool_tip_pos - tumor_pos, dim=-1)       # [B]
+        d_startpos_tumor = torch.norm(start_pose - tumor_pos, dim=-1)          # [B]
+
+        # Bookkeeping for downstream use
+        self.path_direction = path_direction                                   # [B,3]
+        self.closest_point_on_path = closest_point                             # [B,3]
+
+        # Logs
+        omni.log.info(f"Deviation: {deviation}")
         omni.log.info(f"Normalized progress: {normalized_progress}, Deviation: {deviation}")
-        omni.log.info(f"Tooltip position: {self.tool_tip_pos}, Tumor position: {tumor_pos},")
+        omni.log.info(f"Tooltip position: {self.tool_tip_pos}, Tumor position: {tumor_pos}")
         omni.log.info(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
         omni.log.info(f"Distance to tumor from tooltip: {d_ttip_tumor}, Distance from start position to tumor: {d_startpos_tumor}")
-        return normalized_progress, deviation, perpendicular_vec, path_length, d_ttip_tumor, d_startpos_tumor, projected_dist
+
+        # projected_dist uses the *unclamped* projection (can be <0 or >|path|), like before
+        projected_dist = t.squeeze(-1)                                         # [B]
+
+        return (normalized_progress,
+                deviation,
+                perpendicular_vec,
+                path_length.squeeze(-1),
+                d_ttip_tumor,
+                d_startpos_tumor,
+                projected_dist)
 
     def discretize_preop_path(self, start_pose, tumor_centroid, num_points=42):
         """
@@ -1357,7 +1392,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         return pos, quat
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
-        #self.draw.clear_points()
+        if self.common_step_counter % 49 == 0:
+            self.draw.clear_points()
         # Convert to numpy if torch
         if isinstance(points_np, torch.Tensor):
             points_np = points_np.detach().cpu().numpy()
