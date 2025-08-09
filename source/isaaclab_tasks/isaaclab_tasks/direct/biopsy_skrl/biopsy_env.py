@@ -667,6 +667,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         overshoot_positive = s_unclamped > (1.0 + s_tol)
         overshoot_negative = s_unclamped < (0.0 - s_tol)
         truncated = (~success) & (time_out | overshoot_positive | overshoot_negative)
+        self.extras.update({
+            "success": success,
+            "truncated": truncated
+        })
         return success, truncated
 
 
@@ -721,6 +725,23 @@ class BiopsyDirectEnv(DirectRLEnv):
         heading_y = torch.sum(heading * u_y, dim=-1, keepdim=True)     
         heading_z = torch.sum(heading * u_z, dim=-1, keepdim=True)    
         omni.log.info(f"Heading Y: {heading_y}, Heading Z: {heading_z}")
+
+        self.extras.update({
+            "env_ids": self.env_ids.clone().detach(),                              # [B]
+            "active_path_index": self.active_path_index.clone().detach(),          # [B]
+            "normalized_progress_t": normalized_progress.clone().detach(),         # [B]
+            "normalized_progress_t_ndt": normalized_progress_t_ndt.clone().detach(),  # [B]
+            "deviation_t": deviation.clone().detach(),                             # [B]
+            "deviation_t_ndt": prev_deviation_t_ndt.clone().detach(),              # [B]
+            "signed_delta_y": signed_delta_y.clone().detach(),                     # [B, 1]
+            "signed_delta_z": signed_delta_z.clone().detach(),                     # [B, 1]
+            "heading_y": heading_y.clone().detach(),                               # [B, 1]
+            "heading_z": heading_z.clone().detach(),                               # [B, 1]
+            "heading_t": heading_t.clone().detach(),                               # [B, 1]
+            "d_ttip_tumor": d_ttip_tumor.clone().detach(),                         # [B]
+            "tooltip_pos": self.tool_tip_pos.clone().detach(),                     # [B, 3]
+            "tooltip_rot": self.tool_tip_rot.clone().detach(),                     # [B, 4]
+        })
 
         # --- Assemble observations ---
         obs = {
@@ -777,6 +798,12 @@ class BiopsyDirectEnv(DirectRLEnv):
             + (self.cfg.w_inside_tumor * reward_reached_tumor)
             - (self.cfg.w_action * reward_action)
         )
+        self.extras.update({
+            "reward_progress": self.cfg.w_progress * reward_progress,
+            "reward_deviation": self.cfg.w_deviation * reward_deviation,
+            "reward_reached_tumor": self.cfg.w_inside_tumor * reward_reached_tumor,
+            "reward_action": self.cfg.w_action * reward_action
+        })
         reward = torch.clip(reward, min=-100.0, max=100.0)
         # print(f"[DEBUG] reward shape: {reward.shape}")
         return reward  # ensure shape [B]
