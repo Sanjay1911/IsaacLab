@@ -62,6 +62,32 @@ from isaaclab.assets import Articulation
 from isaaclab.sim import SimulationContext
 from isaaclab.assets import RigidObject, RigidObjectCfg
 from pxr import Usd, UsdGeom, Gf
+try:
+    import omni.kit.app
+
+    # # Enable the extension
+    # omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate(
+    #     "isaacsim.examples.ui", True
+    #) # https://docs.omniverse.nvidia.com/kit/docs/kit-manual/latest/guide/extensions_advanced.html#enable-extension
+    # ext_manager = omni.kit.app.get_app().get_extension_manager()  # https://docs.omniverse.nvidia.com/kit/docs/kit-manual/latest/omni.kit.app/omni.kit.app.get_app.html
+    # ext_id = ext_manager.get_enabled_extension_id("isaacsim.examples.ui")
+    # ext_instance = ext_manager.get_extension_dict(ext_id) # https://docs.omniverse.nvidia.com/kit/docs/kit-manual/latest/guide/extensions_advanced.html#runtime-information
+    # print("Got extension instance:", ext_instance)
+    import isaacsim.examples.ui.extension as custom_ui
+    print("Custom UI extension imported successfully (post)", custom_ui)
+    ui_instance = custom_ui.EXTENSION_INSTANCE
+    print("UI Instance:", ui_instance._plot_data)
+except Exception as e:
+    print(f"Error importing omni.kit.app: {e}")
+try:
+    import carb
+    import omni.appwindow
+    import omni.ext
+    import omni.ui as ui
+    import omni.kit.app
+except ImportError as e:
+    print(f"Error importing modules: {e}")
+
 # torch.manual_seed(42)  # for reproducibility
 # np.random.seed(42)  # for reproducibility
 # Parameters
@@ -327,7 +353,35 @@ def rotation_between(vec1, vec2):
         w = torch.cos(angle / 2)
         xyz = axis * s
         return torch.cat((w.unsqueeze(0), xyz))
-        
+
+def update_plot(skull):
+    skull_pose = skull.get_world_poses()
+    position, quaternion = skull_pose
+    needle_x = float(position[0][0])
+    needle_y = float(position[0][1])
+    needle_z = float(position[0][2])
+    print("Needle Position:", needle_x, needle_y, needle_z)
+    
+    ui_instance._plot_data.append(needle_x)
+    if len(ui_instance._plot_data) > 360:
+        ui_instance._plot_data.pop(0)
+    ui_instance._models["timeseries_plot"].set_data(*ui_instance._plot_data)
+    ui_instance._models["timeseries_plot_val"].set_value(needle_x)
+
+    # Y data
+    ui_instance._plot_data_1.append(needle_y)
+    if len(ui_instance._plot_data_1) > 360:
+        ui_instance._plot_data_1.pop(0)
+    ui_instance._models["timeseries_plot_1"].set_data(*ui_instance._plot_data_1)
+    ui_instance._models["timeseries_plot_val_1"].set_value(needle_y)
+
+    # Z data  
+    ui_instance._plot_data_2.append(needle_z)
+    if len(ui_instance._plot_data_2) > 360:
+        ui_instance._plot_data_2.pop(0)
+    ui_instance._models["timeseries_plot_2"].set_data(*ui_instance._plot_data_2)
+    ui_instance._models["timeseries_plot_val_2"].set_value(needle_z)
+
 
 def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, origins):
     """Runs the simulation loop."""
@@ -336,6 +390,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
     #   the dictionary. This dictionary is replaced by the InteractiveScene class in the next tutorial.
     num_envs = scene.num_envs
     scene_origins = scene.env_origins
+    skull = scene["skull"]
     robot = scene["needle"]
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
     frame_marker_cfg.markers["frame"].scale = (0.005, 0.005, 0.005)
@@ -441,7 +496,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
             robot.write_root_pose_to_sim(root_state[:, :7])
             robot.write_root_velocity_to_sim(root_state[:, 7:])
             robot.reset()
-        
+        if not args_cli.headless:
+            update_plot(skull)
         robot.write_data_to_sim()
         sim.step()
         count += 1

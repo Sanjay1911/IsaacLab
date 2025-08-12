@@ -29,7 +29,7 @@ import gymnasium as gym
 # USD and Omniverse / IsaacSim core libraries
 from pxr import UsdGeom, Gf
 import omni.log
-
+import omni.kit.app
 # Stage and prim management
 import isaacsim.core.utils.prims as prim_utils
 import isaacsim.core.utils.stage as stage_utils
@@ -208,7 +208,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 @configclass
 class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
-    episode_length_s = 4.1666  # 250 timesteps
+    episode_length_s = 8.333  # 250 timesteps
     decimation = 50
     action_space = 3
     observation_space = 23
@@ -234,11 +234,11 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     dof_velocity_scale = 0.1
 
     # reward scales
-    w_progress = 5.0
-    w_deviation = 3.0
+    w_progress = 2.0
+    w_deviation = 2.0
     w_collision = 1.5
-    w_inside_tumor = 10.0
-    w_action = 1.0  
+    w_inside_tumor = 20.0
+    w_action = 0.5  
 
 
 class BiopsyDirectEnv(DirectRLEnv):
@@ -278,6 +278,12 @@ class BiopsyDirectEnv(DirectRLEnv):
             omni.log.warn("Running in headless mode. No rendering will be performed.")
             from isaacsim.util.debug_draw import _debug_draw
             self.draw = _debug_draw.acquire_debug_draw_interface()
+            try:
+                import isaacsim.examples.ui.extension as custom_ui
+                self.ui_instance = custom_ui.EXTENSION_INSTANCE
+                print("Custom UI extension imported successfully (post)")
+            except Exception as e:
+                print(f"Error importing omni.kit.app: {e}")
 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
         self.cloner = GridCloner(spacing=self.cfg.scene.env_spacing)
@@ -289,17 +295,14 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"Is valid: {prim.IsValid()}")
         #self.draw = _debug_draw.acquire_debug_draw_interface()
         try:
-            self.U1 = torch.tensor(0.01, device=self.device, dtype=torch.float32)  # mm/s
-            self.U2 = torch.tensor(0.1, device=self.device, dtype=torch.float32)  # mm/s
             self.REB = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
             self.PHI_Deg = torch.tensor(30, device=self.device, dtype=torch.float32)  # degrees
-            self.PHI_Rad = torch.deg2rad(self.PHI_Deg)  # radians
-            self.CURV = torch.tensor(0.2, device=self.device, dtype=torch.float32)  # mm
+            self.CURV = torch.tensor(0.05, device=self.device, dtype=torch.float32)  # mm
             self.dt_steer = torch.tensor(0.5, device=self.device, dtype=torch.float32)  # seconds
             self.INSERTION_DEPTH = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
             self.TUMOR_REACH_THRESHOLD = torch.tensor(0.0075, device=self.device, dtype=torch.float32)  # mm
             self.DIST_THRESHOLD = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
-            self.K_DEV = torch.tensor(10.0, device=self.device, dtype=torch.float32)  # Deviation scaling factor
+            self.K_DEV = torch.tensor(10000.0, device=self.device, dtype=torch.float32)  # Deviation scaling factor
         except Exception as e:
             print("Error initializing constants:", e)
 
@@ -616,7 +619,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         self.active_path_index[env_ids] = torch.randint(
-            high=len(self.start_positions[0]),
+            high=10,
             size=(len(env_ids),),
             device=self.device,
             dtype=torch.int32
@@ -735,7 +738,8 @@ class BiopsyDirectEnv(DirectRLEnv):
             "heading_z": heading_z,                                    # [B,1]
             "heading_t": heading_t,                                    # [B,1]
         }
-
+        if self.num_envs == 1:
+            self.update_obs_ui(obs["heading_t"], obs["heading_y"], obs["heading_z"], obs["signed_delta_y"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor)
         return {"policy": obs}
 
     def _get_rewards(self):  # TODO: to get calculated Rewards
@@ -784,6 +788,106 @@ class BiopsyDirectEnv(DirectRLEnv):
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
     # ## --------------------------------------- ## #
+    def update_obs_ui(
+        self,
+        heading_t,        # Heading (T)
+        heading_y,        # Heading Y plane
+        heading_z,        # Heading Z plane
+        signed_delta_y,   # Signed ΔY
+        signed_delta_z,   # Signed ΔZ
+        deviation_t,      # Lateral deviation
+        d_ttip_tumor      # Distance tip→tumor
+    ):
+        #print(f"[DEBUG]: {heading_t}, {heading_y}, {heading_z}, {signed_delta_y}, {signed_delta_z}, {deviation_t}, {d_ttip_tumor}")
+        # helper: tensor/ndarray/python -> clean float 
+        def _f(x):
+            try:
+                return float(getattr(x, "squeeze", lambda: x)())
+            except Exception:
+                return float(x)
+
+        # value per plot (in the same order you created them)
+        values = [
+            ("_plot_data",   "timeseries_plot",   "timeseries_plot_val",   _f(heading_t)),
+            ("_plot_data_1", "timeseries_plot_1", "timeseries_plot_val_1", _f(heading_y)),
+            ("_plot_data_2", "timeseries_plot_2", "timeseries_plot_val_2", _f(heading_z)),
+            ("_plot_data_3", "timeseries_plot_3", "timeseries_plot_val_3", _f(signed_delta_y)),
+            ("_plot_data_4", "timeseries_plot_4", "timeseries_plot_val_4", _f(signed_delta_z)),
+            ("_plot_data_5", "timeseries_plot_5", "timeseries_plot_val_5", _f(deviation_t)),
+            ("_plot_data_6", "timeseries_plot_6", "timeseries_plot_val_6", _f(d_ttip_tumor)),
+        ]
+
+        # push each value and refresh its plot
+        for buf_attr, plot_key, val_key, v in values:
+            buf = getattr(self.ui_instance, buf_attr, None)
+            if buf is None:
+                buf = [0.0] * 360
+                setattr(self.ui_instance, buf_attr, buf)
+            buf.append(v)
+            if len(buf) > 360:
+                buf.pop(0)
+
+            plot = self.ui_instance._models.get(plot_key)
+            val_model = self.ui_instance._models.get(val_key)
+            if plot is not None:
+                plot.set_data(*buf)          
+            if val_model is not None:
+                val_model.set_value(v)
+
+    # def update_obs_ui(self, heading_t, heading_y, heading_z, signed_delta_y, signed_delta_z, deviation_t, d_ttip_tumor):
+    #     updated_heading_t = float(heading_t.squeeze())
+    #     updated_heading_y = float(heading_y.squeeze())
+    #     updated_heading_z = float(heading_z.squeeze())
+    #     print(f"Shape and Type of: {signed_delta_y} {signed_delta_y.shape} and {type(signed_delta_y)}")
+    #     print(f"Shape and Type of: {signed_delta_z} {signed_delta_z.shape} and {type(signed_delta_z)}")
+    #     print(f"Shape and Type of: {deviation_t} {deviation_t.shape} and {type(deviation_t)}")
+    #     print(f"Shape and Type of: {d_ttip_tumor} {d_ttip_tumor.shape} and {type(d_ttip_tumor)}")
+    #     updated_signed_delta_y = float(signed_delta_y.squeeze())
+    #     updated_signed_delta_z = float(signed_delta_z.squeeze())
+    #     updated_deviation_t = float(deviation_t.squeeze())
+    #     updated_d_ttip_tumor = float(d_ttip_tumor)
+
+    #     self.ui_instance._plot_data.append(updated_heading_t)
+    #     if len(self.ui_instance._plot_data) > 360:
+    #         self.ui_instance._plot_data.pop(0)
+    #     self.ui_instance._models["timeseries_plot"].set_data(*self.ui_instance._plot_data)
+    #     self.ui_instance._models["timeseries_plot_val"].set_value(updated_heading_t)
+
+    #     self.ui_instance._plot_data_1.append(updated_heading_y)
+    #     if len(self.ui_instance._plot_data_1) > 360:
+    #         self.ui_instance._plot_data_1.pop(0)
+    #     self.ui_instance._models["timeseries_plot_1"].set_data(*self.ui_instance._plot_data_1)
+    #     self.ui_instance._models["timeseries_plot_val_1"].set_value(updated_heading_y)
+
+    #     self.ui_instance._plot_data_2.append(updated_heading_z)
+    #     if len(self.ui_instance._plot_data_2) > 360:
+    #         self.ui_instance._plot_data_2.pop(0)
+    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
+    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+
+    #     self.ui_instance._plot_data_3.append(updated_signed_delta_y)
+    #     if len(self.ui_instance._plot_data_3) > 360:
+    #         self.ui_instance._plot_data_3.pop(0)
+    #     self.ui_instance._models["timeseries_plot_3"].set_data(*self.ui_instance._plot_data_3)
+    #     self.ui_instance._models["timeseries_plot_val_3"].set_value(updated_signed_delta_y)
+
+    #     self.ui_instance._plot_data_1.append(updated_heading_y)
+    #     if len(self.ui_instance._plot_data_1) > 360:
+    #         self.ui_instance._plot_data_1.pop(0)
+    #     self.ui_instance._models["timeseries_plot_1"].set_data(*self.ui_instance._plot_data_1)
+    #     self.ui_instance._models["timeseries_plot_val_1"].set_value(updated_heading_y)
+
+    #     self.ui_instance._plot_data_2.append(updated_heading_z)
+    #     if len(self.ui_instance._plot_data_2) > 360:
+    #         self.ui_instance._plot_data_2.pop(0)
+    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
+    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+
+    #     self.ui_instance._plot_data_2.append(updated_heading_z)
+    #     if len(self.ui_instance._plot_data_2) > 360:
+    #         self.ui_instance._plot_data_2.pop(0)
+    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
+    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
 
     def get_start_pose_active(self, num_envs):
         """
