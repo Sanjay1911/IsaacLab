@@ -119,7 +119,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
+            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -127,7 +127,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -317,7 +317,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.start_pose = []
         self.start_positions = []
         self.start_quaternions = []
-        self.tumor_pickle = load_pickle("custom/path_comparison/pickle_finale/rl_dataset_10envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
+        self.tumor_pickle = load_pickle("/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/path_comparison/pickle_finale/rl_dataset_100envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
         for i in range(min(self.num_envs, len(self.tumor_pickle))):
             omni.log.info(f"Loading tumor data for env: {i}")
             try:
@@ -409,8 +409,8 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Brain Shift 
         self.brain_shift_data = []
-        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations_10envs.pkl")
-        print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
+        shift_data = load_pickle("/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/path_comparison/path_comparison/precomputed_brain_deformations100envs.pkl")
+        # print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
         for env_id in range(self.scene.num_envs):
             try:
                 # omni.log.info(f"[INFO] Extracting top-1 shift steps for env {env_id}")
@@ -537,7 +537,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         current_pose[:, :3, :3] = rot
         current_pose[:, :3, 3] = pos    
         start_pose = self.get_start_pose_active(num_envs=self.num_envs)
-        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor)
+        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor) # TODO: Possible Bug source since this calculates path in global pose from the pickle - No because i already added offsets
         insertion_depths = self.actions[:, 0]  
         twist_angles = self.actions[:, 1]     
         next_poses = []
@@ -546,12 +546,17 @@ class BiopsyDirectEnv(DirectRLEnv):
             preop_direction = self.tumor_centroids_tensor[i] - start_pose[i]
             preop_direction = preop_direction / torch.norm(preop_direction)
 
+            # next_pose = self.generate_needle_step_with_rebound(
+            #     current_pose=current_pose[i],
+            #     insertion_depth=insertion_depths[i],
+            #     twist_angle_rad=twist_angles[i],
+            #     prior_path=prior_path,
+            # )
             # Compute next pose
-            next_pose = self.generate_needle_step_with_rebound(
+            next_pose = self.generate_needle_step(
                 current_pose=current_pose[i],
                 insertion_depth=insertion_depths[i],
                 twist_angle_rad=twist_angles[i],
-                prior_path=prior_paths[i]
             )
             next_poses.append(next_pose)
 
@@ -672,6 +677,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)
         overshoot_positive = s_unclamped > (1.0 + s_tol)
         overshoot_negative = s_unclamped < (0.0 - s_tol)
+        print("Time out:", time_out, "Overshoot positive:", overshoot_positive, "Overshoot negative:", overshoot_negative)
         truncated = (~success) & (time_out | overshoot_positive | overshoot_negative)
         self.extras.update({
             "success": success,
@@ -802,16 +808,18 @@ class BiopsyDirectEnv(DirectRLEnv):
         - penalty for high real-time collision score
         + bonus for being inside tumor
         """
-        reward_progress = (progress_t - progress_t_dt).squeeze(-1)
+        progress = (progress_t - progress_t_dt).squeeze(-1)
+        reward_progress = torch.clamp(progress / (self.INSERTION_DEPTH + 1e-9), -1.0, 1.0)    # TODO: This reward is always 2 or -2 meaning it is clamped in forward or backward direction, but this tells if the agent is going backwards
         reward_deviation = torch.exp(-self.K_DEV * deviation_t.squeeze(-1) ** 2)
         reward_reached_tumor = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).float()
-        reward_action = torch.norm(action, dim=-1)  # already shape [B]
+        a = action if action.dim()==1 else action.squeeze(-1)              
+        reward_action = torch.abs(a) / (0.5 * torch.pi)  
 
         reward = (
             (self.cfg.w_progress * reward_progress)
             + (self.cfg.w_deviation * reward_deviation)
             + (self.cfg.w_inside_tumor * reward_reached_tumor)
-            - (self.cfg.w_action * reward_action)
+            #- (self.cfg.w_action * reward_action)
         )
         self.extras.update({
             "reward_progress": self.cfg.w_progress * reward_progress,
@@ -820,6 +828,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             "reward_action": self.cfg.w_action * reward_action
         })
         reward = torch.clip(reward, min=-100.0, max=100.0)
+        print(f"[DEBUG] Total reward after clipping: {reward}")
         # print(f"[DEBUG] reward shape: {reward.shape}")
         return reward  # ensure shape [B]
 
@@ -1106,6 +1115,53 @@ class BiopsyDirectEnv(DirectRLEnv):
         mat[:3, :3] = skew_symmetric_matrix(w)
         mat[:3, 3] = v
         return mat
+    
+    def generate_needle_step(
+        self,
+        current_pose: torch.Tensor,            # SE(3), shape (4, 4)
+        insertion_depth: float,                # mm
+        twist_angle_rad: float,                # radians
+    ) -> torch.Tensor:  
+        """
+        Angle-only needle step (no rebound; no path inside dynamics).
+        Implements: g_next = g * Rz(dpsi) * exp(feed_twist(s) ) in the BODY frame,
+        using curvature κ = 0.02 mm^-1 (r = 50 mm).
+        """
+
+        phi = torch.deg2rad(self.PHI_Deg)  # bevel angle in radians
+        s   = torch.as_tensor(insertion_depth, device=self.device, dtype=torch.float32)  # mm
+        dpsi= torch.as_tensor(twist_angle_rad, device=self.device, dtype=torch.float32)  # rad
+
+        kappa = torch.tensor(0.02, device=self.device, dtype=torch.float32)  # 1/mm for r=50 mm
+        wx = s * kappa  
+
+        v_local = torch.stack((
+            torch.tensor(0.0, device=self.device, dtype=torch.float32),
+            s * torch.sin(phi),
+            -s * torch.cos(phi)
+        ))
+
+        w_local = torch.stack((
+            wx,
+            torch.tensor(0.0, device=self.device, dtype=torch.float32),
+            torch.tensor(0.0, device=self.device, dtype=torch.float32)  # spin applied separately
+        ))
+
+        xi_hat = self.twist_to_matrix(v_local, w_local)
+
+        cz, sz = torch.cos(dpsi), torch.sin(dpsi)
+        Rz = torch.eye(4, device=self.device, dtype=torch.float32)
+        Rz[:3, :3] = torch.stack((
+            torch.stack((cz, -sz, torch.tensor(0.0, device=self.device))),
+            torch.stack((sz,  cz, torch.tensor(0.0, device=self.device))),
+            torch.stack((torch.tensor(0.0, device=self.device),
+                        torch.tensor(0.0, device=self.device),
+                        torch.tensor(1.0, device=self.device)))
+        ))
+
+        # --- compose: spin then arc ---
+        next_pose = current_pose @ Rz @ torch.linalg.matrix_exp(xi_hat)
+        return next_pose
 
     def generate_needle_step_with_rebound(
         self,

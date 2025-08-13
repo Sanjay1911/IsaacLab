@@ -119,11 +119,10 @@ class SteerableSceneCfg(InteractiveSceneCfg):
     )
 
     # dummy object
-    tumor = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Tumor",
+    skull = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Skull",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj",
-            scale=(10, 10, 10)
+            file_path="/home/czlocal/sanjay_isaac/curobo/src/curobo/content/assets/scene/skull.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -131,16 +130,15 @@ class SteerableSceneCfg(InteractiveSceneCfg):
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
+            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
 
-    tumor1 = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Tumor1",
+    tumor = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj",
-            scale=(1, 1, 1)
+            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -160,23 +158,9 @@ class SteerableSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
     )
 
-    needle11: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/needle11",
-        spawn=sim_utils.CylinderCfg(
-            radius=0.2,
-            height=0.1,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True)
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.10, 0.0, 0.20)),
-    )
-
     #raycaster 
     raycast_camera_vessel = RayCasterCameraCfg(
-        prim_path="{ENV_REGEX_NS}/needle11",
+        prim_path="{ENV_REGEX_NS}/needle",
         mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
         update_period=0.1,
         offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.20), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
@@ -192,7 +176,7 @@ class SteerableSceneCfg(InteractiveSceneCfg):
     )
 
     raycast_tumor = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/needle11",
+        prim_path="{ENV_REGEX_NS}/needle",
         update_period=1 / 60,
         offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.20), rot=(0, 0.0, 0.0, 1.0)),
         mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
@@ -388,6 +372,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
     # Extract scene entities
     # note: we only do this here for readability. In general, it is better to access the entities directly from
     #   the dictionary. This dictionary is replaced by the InteractiveScene class in the next tutorial.
+    omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(lambda e: update_plot_with_dummy_data())
     num_envs = scene.num_envs
     scene_origins = scene.env_origins
     skull = scene["skull"]
@@ -398,22 +383,22 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
     raycaster = scene["raycast_camera_vessel"]
     raycaster.update(dt=sim.get_physics_dt(), force_recompute=True)
     raycast_sensor = scene["raycast_tumor"]
-    print(raycast_sensor)
+    #print(raycast_sensor)
     # Print camera info
-    print(raycaster)
-    print("Received shape of depth image: ", raycaster.data.output["distance_to_image_plane"].shape)
+    #print(raycaster)
+    #print("Received shape of depth image: ", raycaster.data.output["distance_to_image_plane"].shape)
     print("-------------------------------")
     current_gravity_status = robot.root_physx_view.get_disable_gravities()   # https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/extensions/runtime/source/omni.physics.tensors/docs/api/python.html#omni.physics.tensors.impl.api.RigidBodyView.get_disable_gravities
-    print("[INFO]: Current gravity status:", current_gravity_status, current_gravity_status[0])  
+    #print("[INFO]: Current gravity status:", current_gravity_status, current_gravity_status[0])  
     if current_gravity_status[0] == 0:
         print("[INFO]: Disabling gravity for the robot.")
         robot.root_physx_view.set_disable_gravities(1, num_envs)
     origins = [torch.tensor(o, device=sim.device, dtype=torch.float32) for o in origins]
     # TODO: Add perturbance to start and goal points
     start_points = torch.stack([origins[0] + scene_origins[i] for i in range(num_envs)])
-    print(f"Start Points after perturbance: {start_points}")
+   # print(f"Start Points after perturbance: {start_points}")
     goal_points = torch.stack([origins[1] + scene_origins[i] for i in range(num_envs)])
-    print(f"Goal Points after perturbance: {goal_points}")
+    #print(f"Goal Points after perturbance: {goal_points}")
     curved_paths = []
 
     #Define simulation stepping
@@ -452,14 +437,32 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
         curved_paths.append(torch.stack(path))
 
     path_idx = torch.zeros(num_envs, dtype=torch.int32, device=sim.device)
-
     if not args_cli.headless:
         for i in range(num_envs):
             draw_points(curved_paths[i].cpu().numpy(), color=(0.2, 0.8, 0.2, 1.0), size=4.0)
             #draw_lines(start_points[i].cpu(), goal_points[i].cpu(), color="green")
+        """         
+        plot_data = [math.sin(math.radians(i)) for i in range(360)]
+        win = ui.Window("Standalone Plot Example", width=400, height=300)
+        with win.frame:
+            with ui.VStack():
+                ui.Label("Static Sine Wave Plot")
+                plot = ui.Plot(ui.Type.LINE, -1.0, 1.0)
+                plot.set_data(*plot_data)
+        tick = {"val": 0}
 
+        def on_update(e):
+            tick["val"] += 1
+            new_val = math.sin(math.radians(tick["val"]))
+            plot_data.append(new_val)
+            plot_data.pop(0)
+            plot.set_data(*plot_data)
+            
+        sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(on_update) 
+        """
     count = 0
     while simulation_app.is_running():
+        # dummy plotter
         distances = raycaster.data.output["distance_to_camera"]
         if distances is None or distances.shape[0] == 0:
             print("[WARN] Raycast distances not yet populated.")
@@ -474,7 +477,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
             if valid_hits.shape[0] > 0:
                 # Draw the valid hits
                 draw_points(valid_hits.cpu().numpy(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
-                print(f"[INFO] Valid raycast hits for environment {env_id}: {valid_hits.shape[0]}")
+                #print(f"[INFO] Valid raycast hits for environment {env_id}: {valid_hits.shape[0]}")
             else:
                 print(f"[WARN] No valid raycast hits for environment {env_id}.")
         if count % 50 == 0:

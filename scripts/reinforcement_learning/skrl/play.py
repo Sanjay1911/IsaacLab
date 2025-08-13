@@ -122,8 +122,8 @@ def main():
     #     if not resume_path:
     #         print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
     #         return
-    # elif args_cli.checkpoint:
-    #     resume_path = os.path.abspath(args_cli.checkpoint)
+    if args_cli.checkpoint:
+        resume_path = os.path.abspath(args_cli.checkpoint)
     # else:
     #     resume_path = get_checkpoint_path(
     #         log_root_path, run_dir=f".*_{algorithm}_{args_cli.ml_framework}", other_dirs=["checkpoints"]
