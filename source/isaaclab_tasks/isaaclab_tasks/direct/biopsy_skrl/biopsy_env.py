@@ -459,6 +459,9 @@ class BiopsyDirectEnv(DirectRLEnv):
             "path_length": [[] for _ in range(self.num_envs)],
         }
 
+        # UI
+        self.success_counter = 0
+
 
     def _setup_scene(self):
         """
@@ -674,6 +677,14 @@ class BiopsyDirectEnv(DirectRLEnv):
             "success": success,
             "truncated": truncated
         })
+        if success:
+            self.success_counter += 1
+            self.update_reset_ui(self.success_counter)
+        if truncated:
+            print("----------------------------------------")
+            print(f"Truncated due to timeout : {time_out}, overshoot_positive: {overshoot_positive}, overshoot_negative: {overshoot_negative}")
+            print("----------------------------------------")
+
         return success, truncated
 
 
@@ -1523,7 +1534,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         return pos, quat
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
-        if self.common_step_counter % 49 == 0:
+        if self.common_step_counter % 100 == 0:
             self.draw.clear_points()
         # Convert to numpy if torch
         if isinstance(points_np, torch.Tensor):
