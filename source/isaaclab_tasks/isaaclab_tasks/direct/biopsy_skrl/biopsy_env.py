@@ -661,12 +661,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         (normalized_progress,
         deviation,
         perpendicular_vector,
+        closest_point,
         path_length,
         d_ttip_tumor,
         d_start_tumor,
         projected_dist) = self.calc_normalized_progress()
         eps = 1e-8
-        s_unclamped = projected_dist / (path_length + eps) 
+        s_unclamped = projected_dist / (path_length + eps)
         dist_thresh = self.TUMOR_REACH_THRESHOLD      
         s_tol = getattr(self, "S_PROGRESS_TOLERANCE", 1e-3)  
         success = (
@@ -677,20 +678,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)
         overshoot_positive = s_unclamped > (1.0 + s_tol)
         overshoot_negative = s_unclamped < (0.0 - s_tol)
-        print("Time out:", time_out, "Overshoot positive:", overshoot_positive, "Overshoot negative:", overshoot_negative)
         truncated = (~success) & (time_out | overshoot_positive | overshoot_negative)
         self.extras.update({
             "success": success,
             "truncated": truncated
         })
-        if success:
-            self.success_counter += 1
-            self.update_reset_ui(self.success_counter)
-        if truncated:
-            print("----------------------------------------")
-            print(f"Truncated due to timeout : {time_out}, overshoot_positive: {overshoot_positive}, overshoot_negative: {overshoot_negative}")
-            print("----------------------------------------")
-
         return success, truncated
 
 
