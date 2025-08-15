@@ -5,7 +5,7 @@ models:
     unnormalized_log_prob: True
     network:
       - name: net
-        input: 'concatenate([OBSERVATIONS["current_action"], OBSERVATIONS["normalized_depth_t"], OBSERVATIONS["normalized_depth_t_ndt"], OBSERVATIONS["deviation_t"], OBSERVATIONS["deviation_t_ndt"], OBSERVATIONS["signed_delta_y"], OBSERVATIONS["signed_delta_z"], OBSERVATIONS["heading_y"], OBSERVATIONS["heading_z"], OBSERVATIONS["heading_t"]])'
+        input: 'concatenate([OBSERVATIONS["current_action"], OBSERVATIONS["normalized_depth_t"], OBSERVATIONS["normalized_depth_t_ndt"], OBSERVATIONS["deviation_t"], OBSERVATIONS["deviation_t_ndt"], OBSERVATIONS["signed_delta_x"], OBSERVATIONS["signed_delta_z"], OBSERVATIONS["heading_x"], OBSERVATIONS["heading_y"], OBSERVATIONS["heading_z"]])'
         layers: [128, 64, OUTPUT]
         activations: [elu, elu, null]
     output: ACTIONS
@@ -14,7 +14,7 @@ models:
     class: DeterministicMixin
     network:
       - name: net
-        input: 'concatenate([OBSERVATIONS["current_action"], OBSERVATIONS["normalized_depth_t"], OBSERVATIONS["normalized_depth_t_ndt"], OBSERVATIONS["deviation_t"], OBSERVATIONS["deviation_t_ndt"], OBSERVATIONS["signed_delta_y"], OBSERVATIONS["signed_delta_z"], OBSERVATIONS["heading_y"], OBSERVATIONS["heading_z"], OBSERVATIONS["heading_t"]])'
+        input: 'concatenate([OBSERVATIONS["current_action"], OBSERVATIONS["normalized_depth_t"], OBSERVATIONS["normalized_depth_t_ndt"], OBSERVATIONS["deviation_t"], OBSERVATIONS["deviation_t_ndt"], OBSERVATIONS["signed_delta_x"], OBSERVATIONS["signed_delta_z"], OBSERVATIONS["heading_x"], OBSERVATIONS["heading_y"], OBSERVATIONS["heading_z"]])'
         layers: [256, 128, 1]
         activations: [elu, elu, null]
     output: ONE

@@ -709,6 +709,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         (normalized_progress,
         deviation,
         perpendicular_vector,
+        closest_point,
         path_length,
         d_ttip_tumor,
         d_start_tumor,
@@ -721,30 +722,27 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.prev_normalized_progress = normalized_progress.detach()
         self.prev_deviation = deviation.detach()
 
-        path_vec = self.path_direction                                
-        u_y, u_z = self.compute_basis(path_vec)                       
+        path_vec = self.path_direction    
 
-        signed_delta_y = torch.sum(perpendicular_vector * u_y, dim=-1, keepdim=True)
-        signed_delta_z = torch.sum(perpendicular_vector * u_z, dim=-1, keepdim=True)
-        omni.log.info(f"Signed Delta Y: {signed_delta_y}, Signed Delta Z: {signed_delta_z}")
+        position = self.tool_tip_pos
+        quaternion = self.tool_tip_rot
+        current_pose_matrix = torch.eye(4, device=self.device).repeat(self.num_envs, 1, 1)  # [B, 4, 4]
+        current_pose_matrix[:, :3, 3] = position
+        current_pose_matrix[:, :3, :3] = matrix_from_quat(quaternion)
+        
+        closest_point_local = self.get_vector_in_needle_frame(closest_point, current_pose_matrix)
+        signed_delta_x = closest_point_local[:, 0]
+        signed_delta_z = closest_point_local[:, 2]   
 
-        # Heading components between t-dt and t
-        current_action = self.actions.clone()
-        ttip_pos_t_ndt = self.prev_tooltip_pos.clone()
-        self.prev_tooltip_pos = self.tool_tip_pos.detach()
+        omni.log.info(f"Signed Delta X: {signed_delta_x}, Signed Delta Z: {signed_delta_z}")
 
-        delta = self.tool_tip_pos - ttip_pos_t_ndt                     
-        norms = torch.norm(delta, dim=-1, keepdim=True) + 1e-8
-        heading = torch.where(norms > 1e-6, delta / norms, torch.zeros_like(delta))  
-
-        heading_t = torch.sum(heading * path_vec, dim=-1, keepdim=True)  
-        omni.log.info(f"Tooltip position at t: {self.tool_tip_pos}")
-        omni.log.info(f"Tooltip position at t-dt: {ttip_pos_t_ndt}")
-        omni.log.info(f"Heading at t: {heading_t}")
-
-        heading_y = torch.sum(heading * u_y, dim=-1, keepdim=True)     
-        heading_z = torch.sum(heading * u_z, dim=-1, keepdim=True)    
-        omni.log.info(f"Heading Y: {heading_y}, Heading Z: {heading_z}")
+        # Take path vec, translate it to needle_position, then express in needle frame:
+        translated_heading_vec = path_vec + self.tool_tip_pos
+        heading_vec_needle_frame = self.get_vector_in_needle_frame(translated_heading_vec, current_pose_matrix)  # [B, 3]
+        heading_vec_needle_frame = heading_vec_needle_frame / torch.norm(heading_vec_needle_frame, dim=-1, keepdim=True)  # Normalize to unit vector
+        heading_x = heading_vec_needle_frame[:, 0]
+        heading_y = heading_vec_needle_frame[:, 1]
+        heading_z = heading_vec_needle_frame[:, 2]
 
         self.extras.update({
             "env_ids": self.env_ids.clone().detach(),                              # [B]
@@ -753,11 +751,11 @@ class BiopsyDirectEnv(DirectRLEnv):
             "normalized_progress_t_ndt": normalized_progress_t_ndt.clone().detach(),  # [B]
             "deviation_t": deviation.clone().detach(),                             # [B]
             "deviation_t_ndt": prev_deviation_t_ndt.clone().detach(),              # [B]
-            "signed_delta_y": signed_delta_y.clone().detach(),                     # [B, 1]
+            "signed_delta_x": signed_delta_x.clone().detach(),                     # [B, 1]
             "signed_delta_z": signed_delta_z.clone().detach(),                     # [B, 1]
+            "heading_x": heading_x.clone().detach(),                               # [B, 1]
             "heading_y": heading_y.clone().detach(),                               # [B, 1]
             "heading_z": heading_z.clone().detach(),                               # [B, 1]
-            "heading_t": heading_t.clone().detach(),                               # [B, 1]
             "d_ttip_tumor": d_ttip_tumor.clone().detach(),                         # [B]
             "tooltip_pos": self.tool_tip_pos.clone().detach(),                     # [B, 3]
             "tooltip_rot": self.tool_tip_rot.clone().detach(),                     # [B, 4]
@@ -770,14 +768,14 @@ class BiopsyDirectEnv(DirectRLEnv):
             "normalized_depth_t_ndt": normalized_progress_t_ndt.unsqueeze(-1),
             "deviation_t": deviation.unsqueeze(-1),                    # [B,1]
             "deviation_t_ndt": prev_deviation_t_ndt.unsqueeze(-1),     # [B,1]
-            "signed_delta_y": signed_delta_y,                          # [B,1]
+            "signed_delta_x": signed_delta_x,                          # [B,1]
             "signed_delta_z": signed_delta_z,                          # [B,1]
+            "heading_x": heading_x,                                    # [B,1]
             "heading_y": heading_y,                                    # [B,1]
             "heading_z": heading_z,                                    # [B,1]
-            "heading_t": heading_t,                                    # [B,1]
         }
         if self.num_envs == 1:
-            self.update_obs_ui(obs["heading_t"], obs["heading_y"], obs["heading_z"], obs["signed_delta_y"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor)
+            self.update_obs_ui(obs["heading_x"], obs["heading_y"], obs["heading_z"], obs["signed_delta_x"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor)
         return {"policy": obs}
 
     def _get_rewards(self):  # TODO: to get calculated Rewards
@@ -837,10 +835,10 @@ class BiopsyDirectEnv(DirectRLEnv):
     # ## --------------------------------------- ## #
     def update_obs_ui(
         self,
-        heading_t,        # Heading (T)
+        heading_x,        # Heading (T)
         heading_y,        # Heading Y plane
         heading_z,        # Heading Z plane
-        signed_delta_y,   # Signed ΔY
+        signed_delta_x,   # Signed ΔX
         signed_delta_z,   # Signed ΔZ
         deviation_t,      # Lateral deviation
         d_ttip_tumor      # Distance tip→tumor
@@ -852,13 +850,13 @@ class BiopsyDirectEnv(DirectRLEnv):
                 return float(getattr(x, "squeeze", lambda: x)())
             except Exception:
                 return float(x)
-
+        self.ui_instance._models["step"].set_value(self.common_step_counter)
         # value per plot (in the same order you created them)
         values = [
-            ("_plot_data",   "timeseries_plot",   "timeseries_plot_val",   _f(heading_t)),
+            ("_plot_data",   "timeseries_plot",   "timeseries_plot_val",   _f(heading_x)),
             ("_plot_data_1", "timeseries_plot_1", "timeseries_plot_val_1", _f(heading_y)),
             ("_plot_data_2", "timeseries_plot_2", "timeseries_plot_val_2", _f(heading_z)),
-            ("_plot_data_3", "timeseries_plot_3", "timeseries_plot_val_3", _f(signed_delta_y)),
+            ("_plot_data_3", "timeseries_plot_3", "timeseries_plot_val_3", _f(signed_delta_x)),
             ("_plot_data_4", "timeseries_plot_4", "timeseries_plot_val_4", _f(signed_delta_z)),
             ("_plot_data_5", "timeseries_plot_5", "timeseries_plot_val_5", _f(deviation_t)),
             ("_plot_data_6", "timeseries_plot_6", "timeseries_plot_val_6", _f(d_ttip_tumor)),
@@ -1051,7 +1049,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Start pose and tumor pose
         start_pose = self.get_start_pose_active(num_envs=self.num_envs)       # [B,3]
-        tumor_pos, tumor_quat = self.tumor.get_world_poses(self.env_ids)      # [B,3], [B,4]
+        tumor_pos = self.tumor_centroids_tensor    # [B,3], [B,4]
 
         # Segment geometry
         path_vector = tumor_pos - start_pose                                   # [B,3]
@@ -1085,7 +1083,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"Deviation: {deviation}")
         omni.log.info(f"Normalized progress: {normalized_progress}, Deviation: {deviation}")
         omni.log.info(f"Tooltip position: {self.tool_tip_pos}, Tumor position: {tumor_pos}")
-        omni.log.info(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
+        #omni.log.info(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
         omni.log.info(f"Distance to tumor from tooltip: {d_ttip_tumor}, Distance from start position to tumor: {d_startpos_tumor}")
 
         # projected_dist uses the *unclamped* projection (can be <0 or >|path|), like before
@@ -1094,6 +1092,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         return (normalized_progress,
                 deviation,
                 perpendicular_vec,
+                closest_point,
                 path_length.squeeze(-1),
                 d_ttip_tumor,
                 d_startpos_tumor,
