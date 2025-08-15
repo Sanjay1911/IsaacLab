@@ -593,7 +593,8 @@ class BiopsyDirectEnv(DirectRLEnv):
             next_pose = self.generate_needle_step(
                 current_pose=current_pose[i],
                 insertion_depth=insertion_depths[i],
-                twist_angle_rad=twist_angles[i],
+                preop_path=preop_direction,
+                roll_delta_rad=twist_angles[i],
             )
             next_poses.append(next_pose)
 
@@ -962,6 +963,100 @@ class BiopsyDirectEnv(DirectRLEnv):
     #         self.ui_instance._plot_data_2.pop(0)
     #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
     #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+
+    def get_vector_in_needle_frame(self, vector: torch.Tensor, current_pose: torch.Tensor) -> torch.Tensor:
+        """
+        Convert a vector from world frame to needle frame using the current pose.
+        :param vector: Tensor of shape (B, 3) representing the vector in world frame.
+        :param current_pose: Tensor of shape (B, 4, 4) representing the current pose of the needle.
+        :return: Tensor of shape (B, 3) representing the vector in needle frame.
+        """
+        # print("current pose: ", current_pose)
+        # print("vector: ", vector)
+        R = current_pose[:, :3, :3]
+        p = current_pose[:, :3, 3]
+        # Convert vector to needle frame
+        vector_in_needle_frame = (R.transpose(-1, -2) @ (vector - p).unsqueeze(-1)).squeeze(-1)
+        return vector_in_needle_frame
+    
+    def _rot_y(self, theta: torch.Tensor) -> torch.Tensor:
+        c = torch.cos(theta)
+        s = torch.sin(theta)
+        R = torch.eye(3, device=self.device, dtype=torch.float32)
+        R[0, 0], R[0, 2], R[2, 0], R[2, 2] = c, s, -s, c
+        return R
+
+    def _rot_x(self, theta: torch.Tensor) -> torch.Tensor:
+        c = torch.cos(theta); s = torch.sin(theta)
+        R = torch.eye(3, device=self.device, dtype=torch.float32)
+        R[1,1], R[1,2], R[2,1], R[2,2] = c, -s, s, c
+        return R
+    
+    def _rot_y(self, angle):
+        c = torch.cos(angle); s = torch.sin(angle)
+        R = torch.eye(3, device=self.device, dtype=torch.float32)
+        R[0,0] =  c;  R[0,2] =  s
+        R[2,0] = -s;  R[2,2] =  c
+        return R
+
+    def _rot_z(self, phi: torch.Tensor) -> torch.Tensor:
+        c = torch.cos(phi); s = torch.sin(phi)
+        R = torch.eye(3, device=self.device, dtype=torch.float32)
+        R[0,0], R[0,1], R[1,0], R[1,1] = c, -s, s, c
+        return R
+
+    def _make_T(self, R: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+        T = torch.eye(4, device=self.device, dtype=torch.float32)
+        T[:3, :3] = R
+        T[:3,  3] = p
+        return T
+    
+    def generate_needle_step_ludwig(self,
+                                current_pose: torch.Tensor,  # (4,4)
+                                insertion_depth: float,
+                                preop_path: torch.Tensor,
+                                roll_delta_rad: float        # φ (radians), agent action
+                                ) -> torch.Tensor:
+        """
+        Constant-curvature step in the needle frame with chosen 
+        roll angle around instrument axis
+        T_next = T_current * [ Rz(φ) Rx(θ),  Rz(φ) p0 ; 0 1 ],
+        with θ = κ s, p0 = [0, R(1 - cosθ), R sinθ], R = 1/κ.
+        """
+        # fixed step and curvature
+        #
+        # roll_delta_rad = 0.0
+        s = torch.as_tensor(insertion_depth, device=self.device, dtype=torch.float32)
+        #TODO: Check if kappa should have 1/mm or 1/m as unit, IMPORTANT
+        kappa = torch.as_tensor(400, device=self.device, dtype=torch.float32) # assuming radius of 50mm --> 1/50mm - 20 if in metres
+        roll_angle  = torch.as_tensor(roll_delta_rad, device=self.device, dtype=torch.float32)
+        #print("________________________________",roll_angle)
+        # bend angle and radius
+        theta = kappa * s
+        Rcurv = 1.0 / kappa
+
+        # exact circular-arc translation in the unrolled frame
+        cos_th = torch.cos(theta); 
+        sin_th = torch.sin(theta)
+        p0  = torch.stack([ torch.tensor(0.0, device=self.device),
+                            -Rcurv * sin_th,                 
+                            Rcurv * (1 - cos_th) ])
+        
+        #p0 = torch.zeros_like(p0, device=self.device, dtype=torch.float32)  # [3]
+
+        # roll then bend (body update)
+        Ry = self._rot_y(roll_angle) # was -roll_angle
+        Rx = self._rot_x(theta) 
+        # Rx = self._rot_x(theta)
+        R_inc = Ry @ Rx
+        p_inc = Ry @ p0
+
+        T_inc = self._make_T(R_inc, p_inc)
+        # Set T_inc to identity rotation and translation in positive z:
+        #T_inc[:3, :3] = torch.eye(3, device=self.device, dtype=torch.float32)
+        #path_length = torch.norm(preop_path)
+        #T_inc[:3, 3] = torch.tensor([0.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
+        return current_pose @ T_inc
 
     def get_start_pose_active(self, num_envs):
         """
