@@ -66,7 +66,7 @@ from isaaclab.utils import configclass, convert_dict_to_backend
 from isaaclab.utils.io import dump_pickle, load_pickle
 
 # Math utilities
-from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, sample_uniform
+from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, sample_uniform, euler_xyz_from_quat
 
 # Visualization and markers
 from isaaclab.markers import VisualizationMarkers
@@ -351,6 +351,43 @@ class BiopsyDirectEnv(DirectRLEnv):
         tumor_centroids_offset = tumor_centroids_np + offsets_np  # [N, 3]
         self.start_positions_tensor = torch.tensor(start_positions_offset, device=self.device, dtype=torch.float32)
         self.tumor_centroids_tensor = torch.tensor(tumor_centroids_offset, device=self.device, dtype=torch.float32)
+        
+        # self.quaternions has shape [N, 10, 4]. I want to define each quaternion to be oriented such that 
+        # negative y points in direction of tumor_centroids_tensor - start_positions_tensor which has shape [N, 10, 3]:
+        self.start_quaternions_tensor = torch.zeros((self.num_envs, len(self.start_positions[0]), 4), dtype=torch.float32, device=self.device)  # (envs, poses, 4)
+        for i in range(self.num_envs):
+            for j in range(len(self.start_positions[0])):
+                # Get the start position and tumor centroid for this environment and pose
+                start_pos = self.start_positions_tensor[i, j]
+                tumor_centroid = self.tumor_centroids_tensor[i]
+
+                # Compute the direction vector from start position to tumor centroid
+                direction_vector = tumor_centroid - start_pos
+                direction_vector = direction_vector / torch.norm(direction_vector)
+                # Create a rotation that aligns the negative y-axis with the direction vector
+                negative_y = torch.tensor([0.0, -1.0, 0.0], device=self.device, dtype=torch.float32)
+                up_ref = torch.tensor([0.0, 0.0, 1.0], device=self.device, dtype=torch.float32)
+                # if direction_vector ~ up_ref, use +x as fallback
+                near = (torch.abs(torch.dot(direction_vector, up_ref)) > 0.999).all()
+                ref = torch.tensor([1.0, 0.0, 0.0], device=self.device, dtype=torch.float32) if near else up_ref
+                r = torch.cross(ref, direction_vector)
+                r = r / torch.norm(r)
+                u = torch.cross(direction_vector, r)
+                x_col = r
+                y_col = -direction_vector
+                z_col = u
+                R = torch.stack([x_col, y_col, z_col], dim=1)  # Create rotation matrix
+                quat = quat_from_matrix(R)  # Convert rotation matrix to quaternion
+                
+                #dot_product = torch.dot(negative_y, direction_vector)
+                #axis = torch.cross(negative_y, direction_vector)
+                #axis = axis / torch.norm(axis)
+                #angle = torch.acos(torch.clamp(dot_product, -1.0, 1.0))
+                #half_angle = angle / 2.0
+                #w = torch.cos(half_angle)
+                #xyz = axis * torch.sin(half_angle)
+                self.start_quaternions_tensor[i, j] = quat
+        self.start_quaternions = self.start_quaternions_tensor.cpu().numpy().tolist()  # Convert to list for compatibility with other code
         # Convert start poses to lookup tensors
         self.start_poses = torch.zeros((self.num_envs, len(self.start_positions[0]), 7), dtype=torch.float32, device=self.device)  # (envs, poses, 7)
         for i in range(self.num_envs):
