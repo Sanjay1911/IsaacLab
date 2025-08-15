@@ -476,7 +476,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         # Markers
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
         frame_marker_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
-        self.camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
+        self.needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/World/envs/env_0/needle/geometry/mesh"))
 
         # Observation space terms:
         self.pcd = o3d.geometry.PointCloud()  # Placeholder for point cloud data
@@ -518,8 +518,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         - orientation remains fixed to preop base orientation
         """
         # print(f"[DEBUG-STEP] Pre-physics steps called at time step: {self.common_step_counter}, {self._sim_step_counter}")
-        self.actions = actions.clone() 
-        # print(f"Actions received: {type(self.single_action_space)}")
+        self.actions = actions.clone()
+        print("New action update received at", self.common_step_counter) 
         if isinstance(self.single_action_space, gym.spaces.Box):
             low = torch.tensor(self.single_action_space.low, device=self.device)
             high = torch.tensor(self.single_action_space.high, device=self.device)
@@ -558,8 +558,8 @@ class BiopsyDirectEnv(DirectRLEnv):
             twist_angles_deg = twist_bins.float() * 22.5  # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
             # print(f"Insertion depths: {insertion_depths}")
-            # print(f"Twist angles (deg): {twist_angles_deg}")
-            # print(f"Twist angles (rad): {twist_angles_rad}")
+            print(f"Twist angles (deg): {twist_angles_deg}")
+            print(f"Twist angles (rad): {twist_angles_rad}")
             self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)
             # print(f"Updated actions: {self.actions}")
 
@@ -590,7 +590,10 @@ class BiopsyDirectEnv(DirectRLEnv):
             #     prior_path=prior_path,
             # )
             # Compute next pose
-            next_pose = self.generate_needle_step(
+            # print("Calling for next pose", self.common_step_counter)
+            # print("PREOP DIRECTION---------", preop_direction)
+            # print("EULER ANGLE ----------", euler_xyz_from_quat(quat))
+            next_pose = self.generate_needle_step_ludwig(
                 current_pose=current_pose[i],
                 insertion_depth=insertion_depths[i],
                 preop_path=preop_direction,
@@ -603,12 +606,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         new_pos = next_poses[:, :3, 3]
         new_rot = next_poses[:, :3, :3]
         new_quat = quat_from_matrix(new_rot)
-        new_quat = torch.stack([new_quat[:, 3], new_quat[:, 0], new_quat[:, 1], new_quat[:, 2]], dim=-1)
+        #new_quat = torch.stack([new_quat[:, 3], new_quat[:, 0], new_quat[:, 1], new_quat[:, 2]], dim=-1)
 
         new_root_state[:, :3] = new_pos
         new_root_state[:, 3:7] = new_quat
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
+        self.needle_marker.visualize(new_pos, new_quat)
         #self._needle.reset()
         # print(f"[DEBUG-STEP] Action applied at time step: {self.common_step_counter}")
         if not self.cfg.viewer.headless:
@@ -620,7 +624,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 self.draw_points(tip, color=(0.2, 0.8, 0.2, 1.0), size=4.0)
             for i in range(self.num_envs):
                 prior_positions = prior_paths[i][:, :3, 3]
-                self.draw_points(prior_positions, color=(1.0, 0.0, 0.0, 1.0), size=2.0)
+                #self.draw_points(prior_positions, color=(1.0, 0.0, 0.0, 1.0), size=2.0)
 
 
     def _compute_intermediate_values(self, env_ids):
@@ -856,13 +860,19 @@ class BiopsyDirectEnv(DirectRLEnv):
             "reward_action": self.cfg.w_action * reward_action
         })
         reward = torch.clip(reward, min=-100.0, max=100.0)
-        print(f"[DEBUG] Total reward after clipping: {reward}")
+        # print(f"[DEBUG] Total reward after clipping: {reward}")
         # print(f"[DEBUG] reward shape: {reward.shape}")
         return reward  # ensure shape [B]
 
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
     # ## --------------------------------------- ## #
+
+    def update_reset_ui(self, success_counter):
+        if self.ui_instance is not None:
+            self.ui_instance._models["success"].set_value(success_counter)
+            
+
     def update_obs_ui(
         self,
         heading_x,        # Heading (T)
@@ -1073,20 +1083,6 @@ class BiopsyDirectEnv(DirectRLEnv):
             for i in range(self.num_envs)
         ]
         
-    def compute_basis(self, path_vecs):  # [B, 3]
-        ref = torch.tensor([0.0, 0.0, 1.0], device=path_vecs.device).expand_as(path_vecs)
-        alt_ref = torch.tensor([0.0, 1.0, 0.0], device=path_vecs.device).expand_as(path_vecs)
-
-        # Check where path_vec is too close to [0, 0, 1]
-        is_collinear = torch.allclose(path_vecs, ref, atol=1e-2)
-        ref[is_collinear] = alt_ref[is_collinear]
-
-        u_y = torch.cross(path_vecs, ref, dim=-1)
-        u_y = F.normalize(u_y, dim=-1)
-        u_z = torch.cross(path_vecs, u_y, dim=-1)
-        u_z = F.normalize(u_z, dim=-1)
-        return u_y, u_z
-
     def find_closest_path_index(self, tip_positions, prior_paths):
         closest_indices = []
         target_poses = []
@@ -1713,7 +1709,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         return pos, quat
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
-        if self.common_step_counter % 100 == 0:
+        if self.common_step_counter % 1000 == 0:
             self.draw.clear_points()
         # Convert to numpy if torch
         if isinstance(points_np, torch.Tensor):
