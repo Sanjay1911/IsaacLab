@@ -208,8 +208,8 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 @configclass
 class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
-    episode_length_s = 8.333  # 250 timesteps
-    decimation = 50
+    episode_length_s = 4.166  # 250 timesteps
+    decimation = 1
     action_space = 3
     observation_space = 23
     state_space = 0
