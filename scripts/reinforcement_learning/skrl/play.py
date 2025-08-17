@@ -122,13 +122,13 @@ def main():
     #     if not resume_path:
     #         print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
     #         return
-    # elif args_cli.checkpoint:
-    #     resume_path = os.path.abspath(args_cli.checkpoint)
+    if args_cli.checkpoint:
+        resume_path = os.path.abspath(args_cli.checkpoint)
     # else:
     #     resume_path = get_checkpoint_path(
     #         log_root_path, run_dir=f".*_{algorithm}_{args_cli.ml_framework}", other_dirs=["checkpoints"]
     #     )
-    # log_dir = os.path.dirname(os.path.dirname(resume_path))
+    log_dir = os.path.dirname(os.path.dirname(resume_path))
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -176,7 +176,6 @@ def main():
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
-
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
@@ -188,7 +187,10 @@ def main():
             else:
                 actions = outputs[-1].get("mean_actions", outputs[0])
             # env stepping
-            obs, _, _, _, _ = env.step(actions)
+            obs, _, _, _, info = env.step(actions) # returns: obs, rewards, terminateds, truncateds, info
+            # print info
+            print(f"Info: {info}")
+
         if args_cli.video:
             timestep += 1
             # exit the play loop after recording one video
