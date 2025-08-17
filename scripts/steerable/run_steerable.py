@@ -62,6 +62,32 @@ from isaaclab.assets import Articulation
 from isaaclab.sim import SimulationContext
 from isaaclab.assets import RigidObject, RigidObjectCfg
 from pxr import Usd, UsdGeom, Gf
+try:
+    import omni.kit.app
+
+    # # Enable the extension
+    # omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate(
+    #     "isaacsim.examples.ui", True
+    #) # https://docs.omniverse.nvidia.com/kit/docs/kit-manual/latest/guide/extensions_advanced.html#enable-extension
+    # ext_manager = omni.kit.app.get_app().get_extension_manager()  # https://docs.omniverse.nvidia.com/kit/docs/kit-manual/latest/omni.kit.app/omni.kit.app.get_app.html
+    # ext_id = ext_manager.get_enabled_extension_id("isaacsim.examples.ui")
+    # ext_instance = ext_manager.get_extension_dict(ext_id) # https://docs.omniverse.nvidia.com/kit/docs/kit-manual/latest/guide/extensions_advanced.html#runtime-information
+    # print("Got extension instance:", ext_instance)
+    import isaacsim.examples.ui.extension as custom_ui
+    print("Custom UI extension imported successfully (post)", custom_ui)
+    ui_instance = custom_ui.EXTENSION_INSTANCE
+    print("UI Instance:", ui_instance._plot_data)
+except Exception as e:
+    print(f"Error importing omni.kit.app: {e}")
+try:
+    import carb
+    import omni.appwindow
+    import omni.ext
+    import omni.ui as ui
+    import omni.kit.app
+except ImportError as e:
+    print(f"Error importing modules: {e}")
+
 # torch.manual_seed(42)  # for reproducibility
 # np.random.seed(42)  # for reproducibility
 # Parameters
@@ -92,10 +118,20 @@ class SteerableSceneCfg(InteractiveSceneCfg):
         prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
+    # dummy object
+    tumor = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Tumor",
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj",
+            scale=(10, 10, 10)
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+    )
+
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
+            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -103,8 +139,7 @@ class SteerableSceneCfg(InteractiveSceneCfg):
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj",
-            scale=(1, 1, 1)
+            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -302,15 +337,45 @@ def rotation_between(vec1, vec2):
         w = torch.cos(angle / 2)
         xyz = axis * s
         return torch.cat((w.unsqueeze(0), xyz))
-        
+
+def update_plot(skull):
+    skull_pose = skull.get_world_poses()
+    position, quaternion = skull_pose
+    needle_x = float(position[0][0])
+    needle_y = float(position[0][1])
+    needle_z = float(position[0][2])
+    print("Needle Position:", needle_x, needle_y, needle_z)
+    
+    ui_instance._plot_data.append(needle_x)
+    if len(ui_instance._plot_data) > 360:
+        ui_instance._plot_data.pop(0)
+    ui_instance._models["timeseries_plot"].set_data(*ui_instance._plot_data)
+    ui_instance._models["timeseries_plot_val"].set_value(needle_x)
+
+    # Y data
+    ui_instance._plot_data_1.append(needle_y)
+    if len(ui_instance._plot_data_1) > 360:
+        ui_instance._plot_data_1.pop(0)
+    ui_instance._models["timeseries_plot_1"].set_data(*ui_instance._plot_data_1)
+    ui_instance._models["timeseries_plot_val_1"].set_value(needle_y)
+
+    # Z data  
+    ui_instance._plot_data_2.append(needle_z)
+    if len(ui_instance._plot_data_2) > 360:
+        ui_instance._plot_data_2.pop(0)
+    ui_instance._models["timeseries_plot_2"].set_data(*ui_instance._plot_data_2)
+    ui_instance._models["timeseries_plot_val_2"].set_value(needle_z)
+
 
 def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, origins):
     """Runs the simulation loop."""
     # Extract scene entities
     # note: we only do this here for readability. In general, it is better to access the entities directly from
     #   the dictionary. This dictionary is replaced by the InteractiveScene class in the next tutorial.
+    omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(lambda e: update_plot_with_dummy_data())
     num_envs = scene.num_envs
     scene_origins = scene.env_origins
+    skull = scene["skull"]
     robot = scene["needle"]
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
     frame_marker_cfg.markers["frame"].scale = (0.005, 0.005, 0.005)
@@ -318,22 +383,22 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
     raycaster = scene["raycast_camera_vessel"]
     raycaster.update(dt=sim.get_physics_dt(), force_recompute=True)
     raycast_sensor = scene["raycast_tumor"]
-    print(raycast_sensor)
+    #print(raycast_sensor)
     # Print camera info
-    print(raycaster)
-    print("Received shape of depth image: ", raycaster.data.output["distance_to_image_plane"].shape)
+    #print(raycaster)
+    #print("Received shape of depth image: ", raycaster.data.output["distance_to_image_plane"].shape)
     print("-------------------------------")
     current_gravity_status = robot.root_physx_view.get_disable_gravities()   # https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/extensions/runtime/source/omni.physics.tensors/docs/api/python.html#omni.physics.tensors.impl.api.RigidBodyView.get_disable_gravities
-    print("[INFO]: Current gravity status:", current_gravity_status, current_gravity_status[0])  
+    #print("[INFO]: Current gravity status:", current_gravity_status, current_gravity_status[0])  
     if current_gravity_status[0] == 0:
         print("[INFO]: Disabling gravity for the robot.")
         robot.root_physx_view.set_disable_gravities(1, num_envs)
     origins = [torch.tensor(o, device=sim.device, dtype=torch.float32) for o in origins]
     # TODO: Add perturbance to start and goal points
     start_points = torch.stack([origins[0] + scene_origins[i] for i in range(num_envs)])
-    print(f"Start Points after perturbance: {start_points}")
+   # print(f"Start Points after perturbance: {start_points}")
     goal_points = torch.stack([origins[1] + scene_origins[i] for i in range(num_envs)])
-    print(f"Goal Points after perturbance: {goal_points}")
+    #print(f"Goal Points after perturbance: {goal_points}")
     curved_paths = []
 
     #Define simulation stepping
@@ -398,14 +463,32 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
         curved_paths.append(torch.stack(path))
 
     path_idx = torch.zeros(num_envs, dtype=torch.int32, device=sim.device)
-
     if not args_cli.headless:
         for i in range(num_envs):
             draw_points(curved_paths[i].cpu().numpy(), color=(0.2, 0.8, 0.2, 1.0), size=4.0)
             #draw_lines(start_points[i].cpu(), goal_points[i].cpu(), color="green")
+        """         
+        plot_data = [math.sin(math.radians(i)) for i in range(360)]
+        win = ui.Window("Standalone Plot Example", width=400, height=300)
+        with win.frame:
+            with ui.VStack():
+                ui.Label("Static Sine Wave Plot")
+                plot = ui.Plot(ui.Type.LINE, -1.0, 1.0)
+                plot.set_data(*plot_data)
+        tick = {"val": 0}
 
+        def on_update(e):
+            tick["val"] += 1
+            new_val = math.sin(math.radians(tick["val"]))
+            plot_data.append(new_val)
+            plot_data.pop(0)
+            plot.set_data(*plot_data)
+            
+        sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(on_update) 
+        """
     count = 0
     while simulation_app.is_running():
+        # dummy plotter
         distances = raycaster.data.output["distance_to_camera"]
         actual_distances = raycaster.data.output.get("distance_to_camera", None)
         if actual_distances is not None:
@@ -446,7 +529,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
             robot.write_root_pose_to_sim(root_state[:, :7])
             robot.write_root_velocity_to_sim(root_state[:, 7:])
             robot.reset()
-        
+        if not args_cli.headless:
+            update_plot(skull)
         robot.write_data_to_sim()
         sim.step()
         count += 1

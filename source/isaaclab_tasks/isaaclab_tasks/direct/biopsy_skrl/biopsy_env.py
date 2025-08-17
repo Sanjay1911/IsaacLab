@@ -29,7 +29,7 @@ import gymnasium as gym
 # USD and Omniverse / IsaacSim core libraries
 from pxr import UsdGeom, Gf
 import omni.log
-
+import omni.kit.app
 # Stage and prim management
 import isaacsim.core.utils.prims as prim_utils
 import isaacsim.core.utils.stage as stage_utils
@@ -66,7 +66,7 @@ from isaaclab.utils import configclass, convert_dict_to_backend
 from isaaclab.utils.io import dump_pickle, load_pickle
 
 # Math utilities
-from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, sample_uniform
+from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, sample_uniform, euler_xyz_from_quat
 
 # Visualization and markers
 from isaaclab.markers import VisualizationMarkers
@@ -119,7 +119,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/sanjay/thesis_replications/forked/Vessels.usd"
+            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -127,7 +127,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -208,8 +208,8 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 @configclass
 class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
-    episode_length_s = 4.1666  # 250 timesteps
-    decimation = 50
+    episode_length_s = 4.166  # 250 timesteps
+    decimation = 1
     action_space = 3
     observation_space = 23
     state_space = 0
@@ -234,11 +234,11 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     dof_velocity_scale = 0.1
 
     # reward scales
-    w_progress = 5.0
-    w_deviation = 3.0
+    w_progress = 2.0
+    w_deviation = 2.0
     w_collision = 1.5
-    w_inside_tumor = 10.0
-    w_action = 1.0  
+    w_inside_tumor = 20.0
+    w_action = 0.5  
 
 
 class BiopsyDirectEnv(DirectRLEnv):
@@ -278,6 +278,12 @@ class BiopsyDirectEnv(DirectRLEnv):
             omni.log.warn("Running in headless mode. No rendering will be performed.")
             from isaacsim.util.debug_draw import _debug_draw
             self.draw = _debug_draw.acquire_debug_draw_interface()
+            try:
+                import isaacsim.examples.ui.extension as custom_ui
+                self.ui_instance = custom_ui.EXTENSION_INSTANCE
+                print("Custom UI extension imported successfully (post)")
+            except Exception as e:
+                print(f"Error importing omni.kit.app: {e}")
 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
         self.cloner = GridCloner(spacing=self.cfg.scene.env_spacing)
@@ -289,17 +295,14 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"Is valid: {prim.IsValid()}")
         #self.draw = _debug_draw.acquire_debug_draw_interface()
         try:
-            self.U1 = torch.tensor(0.01, device=self.device, dtype=torch.float32)  # mm/s
-            self.U2 = torch.tensor(0.1, device=self.device, dtype=torch.float32)  # mm/s
             self.REB = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
             self.PHI_Deg = torch.tensor(30, device=self.device, dtype=torch.float32)  # degrees
-            self.PHI_Rad = torch.deg2rad(self.PHI_Deg)  # radians
-            self.CURV = torch.tensor(0.2, device=self.device, dtype=torch.float32)  # mm
+            self.CURV = torch.tensor(0.05, device=self.device, dtype=torch.float32)  # mm
             self.dt_steer = torch.tensor(0.5, device=self.device, dtype=torch.float32)  # seconds
             self.INSERTION_DEPTH = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
             self.TUMOR_REACH_THRESHOLD = torch.tensor(0.0075, device=self.device, dtype=torch.float32)  # mm
             self.DIST_THRESHOLD = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
-            self.K_DEV = torch.tensor(10.0, device=self.device, dtype=torch.float32)  # Deviation scaling factor
+            self.K_DEV = torch.tensor(10000.0, device=self.device, dtype=torch.float32)  # Deviation scaling factor
         except Exception as e:
             print("Error initializing constants:", e)
 
@@ -314,7 +317,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.start_pose = []
         self.start_positions = []
         self.start_quaternions = []
-        self.tumor_pickle = load_pickle("custom/path_comparison/pickle_finale/rl_dataset_10envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
+        self.tumor_pickle = load_pickle("/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/path_comparison/pickle_finale/rl_dataset_100envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
         for i in range(min(self.num_envs, len(self.tumor_pickle))):
             omni.log.info(f"Loading tumor data for env: {i}")
             try:
@@ -348,6 +351,43 @@ class BiopsyDirectEnv(DirectRLEnv):
         tumor_centroids_offset = tumor_centroids_np + offsets_np  # [N, 3]
         self.start_positions_tensor = torch.tensor(start_positions_offset, device=self.device, dtype=torch.float32)
         self.tumor_centroids_tensor = torch.tensor(tumor_centroids_offset, device=self.device, dtype=torch.float32)
+        
+        # self.quaternions has shape [N, 10, 4]. I want to define each quaternion to be oriented such that 
+        # negative y points in direction of tumor_centroids_tensor - start_positions_tensor which has shape [N, 10, 3]:
+        self.start_quaternions_tensor = torch.zeros((self.num_envs, len(self.start_positions[0]), 4), dtype=torch.float32, device=self.device)  # (envs, poses, 4)
+        for i in range(self.num_envs):
+            for j in range(len(self.start_positions[0])):
+                # Get the start position and tumor centroid for this environment and pose
+                start_pos = self.start_positions_tensor[i, j]
+                tumor_centroid = self.tumor_centroids_tensor[i]
+
+                # Compute the direction vector from start position to tumor centroid
+                direction_vector = tumor_centroid - start_pos
+                direction_vector = direction_vector / torch.norm(direction_vector)
+                # Create a rotation that aligns the negative y-axis with the direction vector
+                negative_y = torch.tensor([0.0, -1.0, 0.0], device=self.device, dtype=torch.float32)
+                up_ref = torch.tensor([0.0, 0.0, 1.0], device=self.device, dtype=torch.float32)
+                # if direction_vector ~ up_ref, use +x as fallback
+                near = (torch.abs(torch.dot(direction_vector, up_ref)) > 0.999).all()
+                ref = torch.tensor([1.0, 0.0, 0.0], device=self.device, dtype=torch.float32) if near else up_ref
+                r = torch.cross(ref, direction_vector)
+                r = r / torch.norm(r)
+                u = torch.cross(direction_vector, r)
+                x_col = r
+                y_col = -direction_vector
+                z_col = u
+                R = torch.stack([x_col, y_col, z_col], dim=1)  # Create rotation matrix
+                quat = quat_from_matrix(R)  # Convert rotation matrix to quaternion
+                
+                #dot_product = torch.dot(negative_y, direction_vector)
+                #axis = torch.cross(negative_y, direction_vector)
+                #axis = axis / torch.norm(axis)
+                #angle = torch.acos(torch.clamp(dot_product, -1.0, 1.0))
+                #half_angle = angle / 2.0
+                #w = torch.cos(half_angle)
+                #xyz = axis * torch.sin(half_angle)
+                self.start_quaternions_tensor[i, j] = quat
+        self.start_quaternions = self.start_quaternions_tensor.cpu().numpy().tolist()  # Convert to list for compatibility with other code
         # Convert start poses to lookup tensors
         self.start_poses = torch.zeros((self.num_envs, len(self.start_positions[0]), 7), dtype=torch.float32, device=self.device)  # (envs, poses, 7)
         for i in range(self.num_envs):
@@ -406,8 +446,8 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Brain Shift 
         self.brain_shift_data = []
-        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations_10envs.pkl")
-        print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
+        shift_data = load_pickle("/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/path_comparison/path_comparison/precomputed_brain_deformations100envs.pkl")
+        # print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
         for env_id in range(self.scene.num_envs):
             try:
                 # omni.log.info(f"[INFO] Extracting top-1 shift steps for env {env_id}")
@@ -436,7 +476,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         # Markers
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
         frame_marker_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
-        self.camera_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/camera"))
+        self.needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/World/envs/env_0/needle/geometry/mesh"))
 
         # Observation space terms:
         self.pcd = o3d.geometry.PointCloud()  # Placeholder for point cloud data
@@ -455,6 +495,9 @@ class BiopsyDirectEnv(DirectRLEnv):
             "projected_dist": [[] for _ in range(self.num_envs)],
             "path_length": [[] for _ in range(self.num_envs)],
         }
+
+        # UI
+        self.success_counter = 0
 
 
     def _setup_scene(self):
@@ -475,8 +518,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         - orientation remains fixed to preop base orientation
         """
         # print(f"[DEBUG-STEP] Pre-physics steps called at time step: {self.common_step_counter}, {self._sim_step_counter}")
-        self.actions = actions.clone() 
-        # print(f"Actions received: {type(self.single_action_space)}")
+        self.actions = actions.clone()
+        print("New action update received at", self.common_step_counter) 
         if isinstance(self.single_action_space, gym.spaces.Box):
             low = torch.tensor(self.single_action_space.low, device=self.device)
             high = torch.tensor(self.single_action_space.high, device=self.device)
@@ -515,8 +558,8 @@ class BiopsyDirectEnv(DirectRLEnv):
             twist_angles_deg = twist_bins.float() * 22.5  # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
             # print(f"Insertion depths: {insertion_depths}")
-            # print(f"Twist angles (deg): {twist_angles_deg}")
-            # print(f"Twist angles (rad): {twist_angles_rad}")
+            print(f"Twist angles (deg): {twist_angles_deg}")
+            print(f"Twist angles (rad): {twist_angles_rad}")
             self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)
             # print(f"Updated actions: {self.actions}")
 
@@ -531,7 +574,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         current_pose[:, :3, :3] = rot
         current_pose[:, :3, 3] = pos    
         start_pose = self.get_start_pose_active(num_envs=self.num_envs)
-        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor)
+        prior_paths = self.get_prior_paths(start_pose, self.tumor_centroids_tensor) # TODO: Possible Bug source since this calculates path in global pose from the pickle - No because i already added offsets
         insertion_depths = self.actions[:, 0]  
         twist_angles = self.actions[:, 1]     
         next_poses = []
@@ -540,12 +583,21 @@ class BiopsyDirectEnv(DirectRLEnv):
             preop_direction = self.tumor_centroids_tensor[i] - start_pose[i]
             preop_direction = preop_direction / torch.norm(preop_direction)
 
+            # next_pose = self.generate_needle_step_with_rebound(
+            #     current_pose=current_pose[i],
+            #     insertion_depth=insertion_depths[i],
+            #     twist_angle_rad=twist_angles[i],
+            #     prior_path=prior_path,
+            # )
             # Compute next pose
-            next_pose = self.generate_needle_step_with_rebound(
+            # print("Calling for next pose", self.common_step_counter)
+            # print("PREOP DIRECTION---------", preop_direction)
+            # print("EULER ANGLE ----------", euler_xyz_from_quat(quat))
+            next_pose = self.generate_needle_step_ludwig(
                 current_pose=current_pose[i],
                 insertion_depth=insertion_depths[i],
-                twist_angle_rad=twist_angles[i],
-                prior_path=prior_paths[i]
+                preop_path=preop_direction,
+                roll_delta_rad=twist_angles[i],
             )
             next_poses.append(next_pose)
 
@@ -554,12 +606,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         new_pos = next_poses[:, :3, 3]
         new_rot = next_poses[:, :3, :3]
         new_quat = quat_from_matrix(new_rot)
-        new_quat = torch.stack([new_quat[:, 3], new_quat[:, 0], new_quat[:, 1], new_quat[:, 2]], dim=-1)
+        #new_quat = torch.stack([new_quat[:, 3], new_quat[:, 0], new_quat[:, 1], new_quat[:, 2]], dim=-1)
 
         new_root_state[:, :3] = new_pos
         new_root_state[:, 3:7] = new_quat
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
+        self.needle_marker.visualize(new_pos, new_quat)
         #self._needle.reset()
         # print(f"[DEBUG-STEP] Action applied at time step: {self.common_step_counter}")
         if not self.cfg.viewer.headless:
@@ -571,7 +624,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 self.draw_points(tip, color=(0.2, 0.8, 0.2, 1.0), size=4.0)
             for i in range(self.num_envs):
                 prior_positions = prior_paths[i][:, :3, 3]
-                self.draw_points(prior_positions, color=(1.0, 0.0, 0.0, 1.0), size=2.0)
+                #self.draw_points(prior_positions, color=(1.0, 0.0, 0.0, 1.0), size=2.0)
 
 
     def _compute_intermediate_values(self, env_ids):
@@ -616,7 +669,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
         # Recompute any intermediate buffers (like tooltip pos, etc.)
         self.active_path_index[env_ids] = torch.randint(
-            high=len(self.start_positions[0]),
+            high=10,
             size=(len(env_ids),),
             device=self.device,
             dtype=torch.int32
@@ -650,12 +703,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         (normalized_progress,
         deviation,
         perpendicular_vector,
+        closest_point,
         path_length,
         d_ttip_tumor,
         d_start_tumor,
         projected_dist) = self.calc_normalized_progress()
         eps = 1e-8
-        s_unclamped = projected_dist / (path_length + eps) 
+        s_unclamped = projected_dist / (path_length + eps)
         dist_thresh = self.TUMOR_REACH_THRESHOLD      
         s_tol = getattr(self, "S_PROGRESS_TOLERANCE", 1e-3)  
         success = (
@@ -689,6 +743,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         (normalized_progress,
         deviation,
         perpendicular_vector,
+        closest_point,
         path_length,
         d_ttip_tumor,
         d_start_tumor,
@@ -701,30 +756,27 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.prev_normalized_progress = normalized_progress.detach()
         self.prev_deviation = deviation.detach()
 
-        path_vec = self.path_direction                                
-        u_y, u_z = self.compute_basis(path_vec)                       
+        path_vec = self.path_direction    
 
-        signed_delta_y = torch.sum(perpendicular_vector * u_y, dim=-1, keepdim=True)
-        signed_delta_z = torch.sum(perpendicular_vector * u_z, dim=-1, keepdim=True)
-        omni.log.info(f"Signed Delta Y: {signed_delta_y}, Signed Delta Z: {signed_delta_z}")
+        position = self.tool_tip_pos
+        quaternion = self.tool_tip_rot
+        current_pose_matrix = torch.eye(4, device=self.device).repeat(self.num_envs, 1, 1)  # [B, 4, 4]
+        current_pose_matrix[:, :3, 3] = position
+        current_pose_matrix[:, :3, :3] = matrix_from_quat(quaternion)
+        
+        closest_point_local = self.get_vector_in_needle_frame(closest_point, current_pose_matrix)
+        signed_delta_x = closest_point_local[:, 0]
+        signed_delta_z = closest_point_local[:, 2]   
 
-        # Heading components between t-dt and t
-        current_action = self.actions.clone()
-        ttip_pos_t_ndt = self.prev_tooltip_pos.clone()
-        self.prev_tooltip_pos = self.tool_tip_pos.detach()
+        omni.log.info(f"Signed Delta X: {signed_delta_x}, Signed Delta Z: {signed_delta_z}")
 
-        delta = self.tool_tip_pos - ttip_pos_t_ndt                     
-        norms = torch.norm(delta, dim=-1, keepdim=True) + 1e-8
-        heading = torch.where(norms > 1e-6, delta / norms, torch.zeros_like(delta))  
-
-        heading_t = torch.sum(heading * path_vec, dim=-1, keepdim=True)  
-        omni.log.info(f"Tooltip position at t: {self.tool_tip_pos}")
-        omni.log.info(f"Tooltip position at t-dt: {ttip_pos_t_ndt}")
-        omni.log.info(f"Heading at t: {heading_t}")
-
-        heading_y = torch.sum(heading * u_y, dim=-1, keepdim=True)     
-        heading_z = torch.sum(heading * u_z, dim=-1, keepdim=True)    
-        omni.log.info(f"Heading Y: {heading_y}, Heading Z: {heading_z}")
+        # Take path vec, translate it to needle_position, then express in needle frame:
+        translated_heading_vec = path_vec + self.tool_tip_pos
+        heading_vec_needle_frame = self.get_vector_in_needle_frame(translated_heading_vec, current_pose_matrix)  # [B, 3]
+        heading_vec_needle_frame = heading_vec_needle_frame / torch.norm(heading_vec_needle_frame, dim=-1, keepdim=True)  # Normalize to unit vector
+        heading_x = heading_vec_needle_frame[:, 0]
+        heading_y = heading_vec_needle_frame[:, 1]
+        heading_z = heading_vec_needle_frame[:, 2]
 
         self.extras.update({
             "env_ids": self.env_ids.clone().detach(),                              # [B]
@@ -733,11 +785,11 @@ class BiopsyDirectEnv(DirectRLEnv):
             "normalized_progress_t_ndt": normalized_progress_t_ndt.clone().detach(),  # [B]
             "deviation_t": deviation.clone().detach(),                             # [B]
             "deviation_t_ndt": prev_deviation_t_ndt.clone().detach(),              # [B]
-            "signed_delta_y": signed_delta_y.clone().detach(),                     # [B, 1]
+            "signed_delta_x": signed_delta_x.clone().detach(),                     # [B, 1]
             "signed_delta_z": signed_delta_z.clone().detach(),                     # [B, 1]
+            "heading_x": heading_x.clone().detach(),                               # [B, 1]
             "heading_y": heading_y.clone().detach(),                               # [B, 1]
             "heading_z": heading_z.clone().detach(),                               # [B, 1]
-            "heading_t": heading_t.clone().detach(),                               # [B, 1]
             "d_ttip_tumor": d_ttip_tumor.clone().detach(),                         # [B]
             "tooltip_pos": self.tool_tip_pos.clone().detach(),                     # [B, 3]
             "tooltip_rot": self.tool_tip_rot.clone().detach(),                     # [B, 4]
@@ -750,13 +802,14 @@ class BiopsyDirectEnv(DirectRLEnv):
             "normalized_depth_t_ndt": normalized_progress_t_ndt.unsqueeze(-1),
             "deviation_t": deviation.unsqueeze(-1),                    # [B,1]
             "deviation_t_ndt": prev_deviation_t_ndt.unsqueeze(-1),     # [B,1]
-            "signed_delta_y": signed_delta_y,                          # [B,1]
+            "signed_delta_x": signed_delta_x,                          # [B,1]
             "signed_delta_z": signed_delta_z,                          # [B,1]
+            "heading_x": heading_x,                                    # [B,1]
             "heading_y": heading_y,                                    # [B,1]
             "heading_z": heading_z,                                    # [B,1]
-            "heading_t": heading_t,                                    # [B,1]
         }
-
+        if self.num_envs == 1:
+            self.update_obs_ui(obs["heading_x"], obs["heading_y"], obs["heading_z"], obs["signed_delta_x"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor)
         return {"policy": obs}
 
     def _get_rewards(self):  # TODO: to get calculated Rewards
@@ -787,16 +840,18 @@ class BiopsyDirectEnv(DirectRLEnv):
         - penalty for high real-time collision score
         + bonus for being inside tumor
         """
-        reward_progress = (progress_t - progress_t_dt).squeeze(-1)
+        progress = (progress_t - progress_t_dt).squeeze(-1)
+        reward_progress = torch.clamp(progress / (self.INSERTION_DEPTH + 1e-9), -1.0, 1.0)    # TODO: This reward is always 2 or -2 meaning it is clamped in forward or backward direction, but this tells if the agent is going backwards
         reward_deviation = torch.exp(-self.K_DEV * deviation_t.squeeze(-1) ** 2)
         reward_reached_tumor = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).float()
-        reward_action = torch.norm(action, dim=-1)  # already shape [B]
+        a = action if action.dim()==1 else action.squeeze(-1)              
+        reward_action = torch.abs(a) / (0.5 * torch.pi)  
 
         reward = (
             (self.cfg.w_progress * reward_progress)
             + (self.cfg.w_deviation * reward_deviation)
             + (self.cfg.w_inside_tumor * reward_reached_tumor)
-            - (self.cfg.w_action * reward_action)
+            #- (self.cfg.w_action * reward_action)
         )
         self.extras.update({
             "reward_progress": self.cfg.w_progress * reward_progress,
@@ -805,12 +860,213 @@ class BiopsyDirectEnv(DirectRLEnv):
             "reward_action": self.cfg.w_action * reward_action
         })
         reward = torch.clip(reward, min=-100.0, max=100.0)
+        # print(f"[DEBUG] Total reward after clipping: {reward}")
         # print(f"[DEBUG] reward shape: {reward.shape}")
         return reward  # ensure shape [B]
 
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
     # ## --------------------------------------- ## #
+
+    def update_reset_ui(self, success_counter):
+        if self.ui_instance is not None:
+            self.ui_instance._models["success"].set_value(success_counter)
+            
+
+    def update_obs_ui(
+        self,
+        heading_x,        # Heading (T)
+        heading_y,        # Heading Y plane
+        heading_z,        # Heading Z plane
+        signed_delta_x,   # Signed ΔX
+        signed_delta_z,   # Signed ΔZ
+        deviation_t,      # Lateral deviation
+        d_ttip_tumor      # Distance tip→tumor
+    ):
+        #print(f"[DEBUG]: {heading_t}, {heading_y}, {heading_z}, {signed_delta_y}, {signed_delta_z}, {deviation_t}, {d_ttip_tumor}")
+        # helper: tensor/ndarray/python -> clean float 
+        def _f(x):
+            try:
+                return float(getattr(x, "squeeze", lambda: x)())
+            except Exception:
+                return float(x)
+        self.ui_instance._models["step"].set_value(self.common_step_counter)
+        # value per plot (in the same order you created them)
+        values = [
+            ("_plot_data",   "timeseries_plot",   "timeseries_plot_val",   _f(heading_x)),
+            ("_plot_data_1", "timeseries_plot_1", "timeseries_plot_val_1", _f(heading_y)),
+            ("_plot_data_2", "timeseries_plot_2", "timeseries_plot_val_2", _f(heading_z)),
+            ("_plot_data_3", "timeseries_plot_3", "timeseries_plot_val_3", _f(signed_delta_x)),
+            ("_plot_data_4", "timeseries_plot_4", "timeseries_plot_val_4", _f(signed_delta_z)),
+            ("_plot_data_5", "timeseries_plot_5", "timeseries_plot_val_5", _f(deviation_t)),
+            ("_plot_data_6", "timeseries_plot_6", "timeseries_plot_val_6", _f(d_ttip_tumor)),
+        ]
+
+        # push each value and refresh its plot
+        for buf_attr, plot_key, val_key, v in values:
+            buf = getattr(self.ui_instance, buf_attr, None)
+            if buf is None:
+                buf = [0.0] * 360
+                setattr(self.ui_instance, buf_attr, buf)
+            buf.append(v)
+            if len(buf) > 360:
+                buf.pop(0)
+
+            plot = self.ui_instance._models.get(plot_key)
+            val_model = self.ui_instance._models.get(val_key)
+            if plot is not None:
+                plot.set_data(*buf)          
+            if val_model is not None:
+                val_model.set_value(v)
+
+    # def update_obs_ui(self, heading_t, heading_y, heading_z, signed_delta_y, signed_delta_z, deviation_t, d_ttip_tumor):
+    #     updated_heading_t = float(heading_t.squeeze())
+    #     updated_heading_y = float(heading_y.squeeze())
+    #     updated_heading_z = float(heading_z.squeeze())
+    #     print(f"Shape and Type of: {signed_delta_y} {signed_delta_y.shape} and {type(signed_delta_y)}")
+    #     print(f"Shape and Type of: {signed_delta_z} {signed_delta_z.shape} and {type(signed_delta_z)}")
+    #     print(f"Shape and Type of: {deviation_t} {deviation_t.shape} and {type(deviation_t)}")
+    #     print(f"Shape and Type of: {d_ttip_tumor} {d_ttip_tumor.shape} and {type(d_ttip_tumor)}")
+    #     updated_signed_delta_y = float(signed_delta_y.squeeze())
+    #     updated_signed_delta_z = float(signed_delta_z.squeeze())
+    #     updated_deviation_t = float(deviation_t.squeeze())
+    #     updated_d_ttip_tumor = float(d_ttip_tumor)
+
+    #     self.ui_instance._plot_data.append(updated_heading_t)
+    #     if len(self.ui_instance._plot_data) > 360:
+    #         self.ui_instance._plot_data.pop(0)
+    #     self.ui_instance._models["timeseries_plot"].set_data(*self.ui_instance._plot_data)
+    #     self.ui_instance._models["timeseries_plot_val"].set_value(updated_heading_t)
+
+    #     self.ui_instance._plot_data_1.append(updated_heading_y)
+    #     if len(self.ui_instance._plot_data_1) > 360:
+    #         self.ui_instance._plot_data_1.pop(0)
+    #     self.ui_instance._models["timeseries_plot_1"].set_data(*self.ui_instance._plot_data_1)
+    #     self.ui_instance._models["timeseries_plot_val_1"].set_value(updated_heading_y)
+
+    #     self.ui_instance._plot_data_2.append(updated_heading_z)
+    #     if len(self.ui_instance._plot_data_2) > 360:
+    #         self.ui_instance._plot_data_2.pop(0)
+    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
+    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+
+    #     self.ui_instance._plot_data_3.append(updated_signed_delta_y)
+    #     if len(self.ui_instance._plot_data_3) > 360:
+    #         self.ui_instance._plot_data_3.pop(0)
+    #     self.ui_instance._models["timeseries_plot_3"].set_data(*self.ui_instance._plot_data_3)
+    #     self.ui_instance._models["timeseries_plot_val_3"].set_value(updated_signed_delta_y)
+
+    #     self.ui_instance._plot_data_1.append(updated_heading_y)
+    #     if len(self.ui_instance._plot_data_1) > 360:
+    #         self.ui_instance._plot_data_1.pop(0)
+    #     self.ui_instance._models["timeseries_plot_1"].set_data(*self.ui_instance._plot_data_1)
+    #     self.ui_instance._models["timeseries_plot_val_1"].set_value(updated_heading_y)
+
+    #     self.ui_instance._plot_data_2.append(updated_heading_z)
+    #     if len(self.ui_instance._plot_data_2) > 360:
+    #         self.ui_instance._plot_data_2.pop(0)
+    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
+    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+
+    #     self.ui_instance._plot_data_2.append(updated_heading_z)
+    #     if len(self.ui_instance._plot_data_2) > 360:
+    #         self.ui_instance._plot_data_2.pop(0)
+    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
+    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+
+    def get_vector_in_needle_frame(self, vector: torch.Tensor, current_pose: torch.Tensor) -> torch.Tensor:
+        """
+        Convert a vector from world frame to needle frame using the current pose.
+        :param vector: Tensor of shape (B, 3) representing the vector in world frame.
+        :param current_pose: Tensor of shape (B, 4, 4) representing the current pose of the needle.
+        :return: Tensor of shape (B, 3) representing the vector in needle frame.
+        """
+        # print("current pose: ", current_pose)
+        # print("vector: ", vector)
+        R = current_pose[:, :3, :3]
+        p = current_pose[:, :3, 3]
+        # Convert vector to needle frame
+        vector_in_needle_frame = (R.transpose(-1, -2) @ (vector - p).unsqueeze(-1)).squeeze(-1)
+        return vector_in_needle_frame
+    
+    def _rot_y(self, theta: torch.Tensor) -> torch.Tensor:
+        c = torch.cos(theta)
+        s = torch.sin(theta)
+        R = torch.eye(3, device=self.device, dtype=torch.float32)
+        R[0, 0], R[0, 2], R[2, 0], R[2, 2] = c, s, -s, c
+        return R
+
+    def _rot_x(self, theta: torch.Tensor) -> torch.Tensor:
+        c = torch.cos(theta); s = torch.sin(theta)
+        R = torch.eye(3, device=self.device, dtype=torch.float32)
+        R[1,1], R[1,2], R[2,1], R[2,2] = c, -s, s, c
+        return R
+    
+    def _rot_y(self, angle):
+        c = torch.cos(angle); s = torch.sin(angle)
+        R = torch.eye(3, device=self.device, dtype=torch.float32)
+        R[0,0] =  c;  R[0,2] =  s
+        R[2,0] = -s;  R[2,2] =  c
+        return R
+
+    def _rot_z(self, phi: torch.Tensor) -> torch.Tensor:
+        c = torch.cos(phi); s = torch.sin(phi)
+        R = torch.eye(3, device=self.device, dtype=torch.float32)
+        R[0,0], R[0,1], R[1,0], R[1,1] = c, -s, s, c
+        return R
+
+    def _make_T(self, R: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+        T = torch.eye(4, device=self.device, dtype=torch.float32)
+        T[:3, :3] = R
+        T[:3,  3] = p
+        return T
+    
+    def generate_needle_step_ludwig(self,
+                                current_pose: torch.Tensor,  # (4,4)
+                                insertion_depth: float,
+                                preop_path: torch.Tensor,
+                                roll_delta_rad: float        # φ (radians), agent action
+                                ) -> torch.Tensor:
+        """
+        Constant-curvature step in the needle frame with chosen 
+        roll angle around instrument axis
+        T_next = T_current * [ Rz(φ) Rx(θ),  Rz(φ) p0 ; 0 1 ],
+        with θ = κ s, p0 = [0, R(1 - cosθ), R sinθ], R = 1/κ.
+        """
+        # fixed step and curvature
+        #
+        # roll_delta_rad = 0.0
+        s = torch.as_tensor(insertion_depth, device=self.device, dtype=torch.float32)
+        #TODO: Check if kappa should have 1/mm or 1/m as unit, IMPORTANT
+        kappa = torch.as_tensor(400, device=self.device, dtype=torch.float32) # assuming radius of 50mm --> 1/50mm - 20 if in metres
+        roll_angle  = torch.as_tensor(roll_delta_rad, device=self.device, dtype=torch.float32)
+        #print("________________________________",roll_angle)
+        # bend angle and radius
+        theta = kappa * s
+        Rcurv = 1.0 / kappa
+
+        # exact circular-arc translation in the unrolled frame
+        cos_th = torch.cos(theta); 
+        sin_th = torch.sin(theta)
+        p0  = torch.stack([ torch.tensor(0.0, device=self.device),
+                            -Rcurv * sin_th,                 
+                            Rcurv * (1 - cos_th) ])
+        
+        #p0 = torch.zeros_like(p0, device=self.device, dtype=torch.float32)  # [3]
+
+        # roll then bend (body update)
+        Ry = self._rot_y(roll_angle) # was -roll_angle
+        Rx = self._rot_x(theta) 
+        # Rx = self._rot_x(theta)
+        R_inc = Ry @ Rx
+        p_inc = Ry @ p0
+
+        T_inc = self._make_T(R_inc, p_inc)
+        # Set T_inc to identity rotation and translation in positive z:
+        #T_inc[:3, :3] = torch.eye(3, device=self.device, dtype=torch.float32)
+        #path_length = torch.norm(preop_path)
+        #T_inc[:3, 3] = torch.tensor([0.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
+        return current_pose @ T_inc
 
     def get_start_pose_active(self, num_envs):
         """
@@ -827,20 +1083,6 @@ class BiopsyDirectEnv(DirectRLEnv):
             for i in range(self.num_envs)
         ]
         
-    def compute_basis(self, path_vecs):  # [B, 3]
-        ref = torch.tensor([0.0, 0.0, 1.0], device=path_vecs.device).expand_as(path_vecs)
-        alt_ref = torch.tensor([0.0, 1.0, 0.0], device=path_vecs.device).expand_as(path_vecs)
-
-        # Check where path_vec is too close to [0, 0, 1]
-        is_collinear = torch.allclose(path_vecs, ref, atol=1e-2)
-        ref[is_collinear] = alt_ref[is_collinear]
-
-        u_y = torch.cross(path_vecs, ref, dim=-1)
-        u_y = F.normalize(u_y, dim=-1)
-        u_z = torch.cross(path_vecs, u_y, dim=-1)
-        u_z = F.normalize(u_z, dim=-1)
-        return u_y, u_z
-
     def find_closest_path_index(self, tip_positions, prior_paths):
         closest_indices = []
         target_poses = []
@@ -927,7 +1169,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Start pose and tumor pose
         start_pose = self.get_start_pose_active(num_envs=self.num_envs)       # [B,3]
-        tumor_pos, tumor_quat = self.tumor.get_world_poses(self.env_ids)      # [B,3], [B,4]
+        tumor_pos = self.tumor_centroids_tensor    # [B,3], [B,4]
 
         # Segment geometry
         path_vector = tumor_pos - start_pose                                   # [B,3]
@@ -961,7 +1203,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         omni.log.info(f"Deviation: {deviation}")
         omni.log.info(f"Normalized progress: {normalized_progress}, Deviation: {deviation}")
         omni.log.info(f"Tooltip position: {self.tool_tip_pos}, Tumor position: {tumor_pos}")
-        omni.log.info(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
+        #omni.log.info(f"Shape of tumor positions: {tumor_pos.shape}, Tumor quaternion: {tumor_quat.shape}, tooltip: {self.tool_tip_pos.shape}")
         omni.log.info(f"Distance to tumor from tooltip: {d_ttip_tumor}, Distance from start position to tumor: {d_startpos_tumor}")
 
         # projected_dist uses the *unclamped* projection (can be <0 or >|path|), like before
@@ -970,6 +1212,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         return (normalized_progress,
                 deviation,
                 perpendicular_vec,
+                closest_point,
                 path_length.squeeze(-1),
                 d_ttip_tumor,
                 d_startpos_tumor,
@@ -991,6 +1234,53 @@ class BiopsyDirectEnv(DirectRLEnv):
         mat[:3, :3] = skew_symmetric_matrix(w)
         mat[:3, 3] = v
         return mat
+    
+    def generate_needle_step(
+        self,
+        current_pose: torch.Tensor,            # SE(3), shape (4, 4)
+        insertion_depth: float,                # mm
+        twist_angle_rad: float,                # radians
+    ) -> torch.Tensor:  
+        """
+        Angle-only needle step (no rebound; no path inside dynamics).
+        Implements: g_next = g * Rz(dpsi) * exp(feed_twist(s) ) in the BODY frame,
+        using curvature κ = 0.02 mm^-1 (r = 50 mm).
+        """
+
+        phi = torch.deg2rad(self.PHI_Deg)  # bevel angle in radians
+        s   = torch.as_tensor(insertion_depth, device=self.device, dtype=torch.float32)  # mm
+        dpsi= torch.as_tensor(twist_angle_rad, device=self.device, dtype=torch.float32)  # rad
+
+        kappa = torch.tensor(0.02, device=self.device, dtype=torch.float32)  # 1/mm for r=50 mm
+        wx = s * kappa  
+
+        v_local = torch.stack((
+            torch.tensor(0.0, device=self.device, dtype=torch.float32),
+            s * torch.sin(phi),
+            -s * torch.cos(phi)
+        ))
+
+        w_local = torch.stack((
+            wx,
+            torch.tensor(0.0, device=self.device, dtype=torch.float32),
+            torch.tensor(0.0, device=self.device, dtype=torch.float32)  # spin applied separately
+        ))
+
+        xi_hat = self.twist_to_matrix(v_local, w_local)
+
+        cz, sz = torch.cos(dpsi), torch.sin(dpsi)
+        Rz = torch.eye(4, device=self.device, dtype=torch.float32)
+        Rz[:3, :3] = torch.stack((
+            torch.stack((cz, -sz, torch.tensor(0.0, device=self.device))),
+            torch.stack((sz,  cz, torch.tensor(0.0, device=self.device))),
+            torch.stack((torch.tensor(0.0, device=self.device),
+                        torch.tensor(0.0, device=self.device),
+                        torch.tensor(1.0, device=self.device)))
+        ))
+
+        # --- compose: spin then arc ---
+        next_pose = current_pose @ Rz @ torch.linalg.matrix_exp(xi_hat)
+        return next_pose
 
     def generate_needle_step_with_rebound(
         self,
@@ -1419,7 +1709,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         return pos, quat
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
-        if self.common_step_counter % 49 == 0:
+        if self.common_step_counter % 1000 == 0:
             self.draw.clear_points()
         # Convert to numpy if torch
         if isinstance(points_np, torch.Tensor):
