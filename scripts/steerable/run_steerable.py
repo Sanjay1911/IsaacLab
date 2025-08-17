@@ -92,16 +92,6 @@ class SteerableSceneCfg(InteractiveSceneCfg):
         prim_path="/World/Light", spawn=sim_utils.DomeLightCfg(intensity=3000.0, color=(0.75, 0.75, 0.75))
     )
 
-    # dummy object
-    tumor = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Tumor",
-        spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj",
-            scale=(10, 10, 10)
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
-    )
-
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.UsdFileCfg(
@@ -110,8 +100,8 @@ class SteerableSceneCfg(InteractiveSceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
 
-    tumor1 = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Tumor1",
+    tumor = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
             file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj",
             scale=(1, 1, 1)
@@ -124,7 +114,7 @@ class SteerableSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/needle",
         spawn=sim_utils.CylinderCfg(
             radius=0.002,
-            height=0.1,
+            height=0.001,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
             mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
             physics_material=sim_utils.RigidBodyMaterialCfg(),
@@ -134,28 +124,14 @@ class SteerableSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
     )
 
-    needle11: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/needle11",
-        spawn=sim_utils.CylinderCfg(
-            radius=0.2,
-            height=0.1,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0, disable_gravity=True),
-            mass_props=sim_utils.MassPropertiesCfg(mass=1.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.5, 0.0, 0.0)),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True)
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.10, 0.0, 0.20)),
-    )
-
     #raycaster 
     raycast_camera_vessel = RayCasterCameraCfg(
-        prim_path="{ENV_REGEX_NS}/needle11",
+        prim_path="{ENV_REGEX_NS}/needle",
         mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
         update_period=0.1,
         offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.20), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
         data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
-        debug_vis=True,
+        debug_vis=False,
         max_distance=0.2,
         pattern_cfg=patterns.PinholeCameraPatternCfg(
             focal_length=24.0,
@@ -166,18 +142,17 @@ class SteerableSceneCfg(InteractiveSceneCfg):
     )
 
     raycast_tumor = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/needle11",
+        prim_path="{ENV_REGEX_NS}/needle",
         update_period=1 / 60,
         offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.20), rot=(0, 0.0, 0.0, 1.0)),
-        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
+        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
         attach_yaw_only=True,
         max_distance=0.2,
-        debug_vis=True,
+        debug_vis=False,
         pattern_cfg=patterns.LidarPatternCfg(
             channels=50, vertical_fov_range=[-60, 60], horizontal_fov_range=[-20, 20], horizontal_res=1.0
         )
     )
-
 
 
 def draw_points(points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):
@@ -228,7 +203,7 @@ def draw_lines(start, end, color):
 
 
 # Function to generate bin directions
-def generate_bin_directions(base_dir, num_bins=8, angle=bin_angle_rad):
+def generate_bin_directions(base_dir, num_bins=16, angle=bin_angle_rad):
     directions = []
     test_tensor = torch.tensor([0, 0, 1], device=base_dir.device, dtype=base_dir.dtype)
     angle_tensor = torch.tensor(angle, device=base_dir.device, dtype=base_dir.dtype)
@@ -263,7 +238,7 @@ def twist_to_matrix(v, w):
     return mat
 
 
-def generate_needle_path(start, goal, u1=0.01, u2=0.0, phi_deg=30.0, r=0.2, reb=0.001, dt=1.0, num_steps=100):
+def generate_needle_path(start, goal, u1=0.02, u2=0.0, phi_deg=30.0, r=0.2, reb=0.001, dt=1.0, num_steps=100):
     """Generates a needle path based on twist kinematics using SE(3)."""
     phi = torch.deg2rad(torch.tensor(phi_deg, device=start.device, dtype=start.dtype))
 
@@ -385,13 +360,39 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
                 heading = best_bin
                 path.append(current_pos.clone())
         elif args_cli.type == "steerable":
-            # Use the generate_needle_path to create a steerable path
             start_pose = torch.eye(4, device=sim.device, dtype=torch.float32)
             start_pose[:3, 3] = start_points[env_id]
+            poses = generate_needle_path(
+                start=start_pose,
+                goal=goal_points[env_id],
+                num_steps=num_steps*2
+            )
+            curved_path = torch.stack([pose[:3, 3] for pose in poses])  # shape (11, 3)
+            curved_paths.append(curved_path)
 
-            poses = generate_needle_path(start=start_pose, goal=goal_points[env_id])
-            for pose in poses:
-                path.append(pose[:3, 3])
+            # P_i = A + (B-A) * i / N where i in [0, N]
+            straight_path = torch.stack([
+                start_points[env_id] + (goal_points[env_id] - start_points[env_id]) * i / 100
+                for i in range(100 + 1)
+            ])  # shape (101, 3)
+
+            # Compute lateral distances and draw lines
+            if not args_cli.headless:
+                for i in range(len(curved_path)):
+                    curved_pt = curved_path[i]
+                    # Compute distances to all straight points
+                    dists = torch.norm(straight_path - curved_pt[None, :], dim=1)
+                    min_idx = torch.argmin(dists)
+                    nearest_straight_pt = straight_path[min_idx]
+                    draw_points(straight_path.cpu().numpy(), color=(0.8, 0.2, 0.2, 1.0), size=2.0)
+                    draw_lines(curved_pt, nearest_straight_pt, color="yellow")
+                    lateral_distance = dists[min_idx].item()
+                    print(f"[env {env_id} | step {i}] Lateral Distance = {lateral_distance:.6f}")
+            
+            # Compute normalized distance from each curved point to the goal point
+            distance_to_goal = torch.norm(curved_path - goal_points[env_id], dim=1)
+            print(f"[env {env_id}] Distance to goal: {distance_to_goal}")
+
         else:
             raise ValueError(f"Unknown type: {args_cli.type}. Supported types are 'greedy' and 'steerable'.")
         curved_paths.append(torch.stack(path))
@@ -406,23 +407,27 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, ori
     count = 0
     while simulation_app.is_running():
         distances = raycaster.data.output["distance_to_camera"]
+        actual_distances = raycaster.data.output.get("distance_to_camera", None)
+        if actual_distances is not None:
+            print(f"[INFO] Actual raycast distances: {actual_distances}")
         if distances is None or distances.shape[0] == 0:
             print("[WARN] Raycast distances not yet populated.")
         else:
             print(f"[INFO] Raycast distances shape: {distances.shape}")
 
         hits = raycast_sensor.data.ray_hits_w
-        for env_id in range(num_envs):
-            hits_env = hits[env_id]  # shape (R, 3)
-            valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
-            valid_hits = hits_env[valid_mask]  # shape (V, 3)
-            if valid_hits.shape[0] > 0:
-                # Draw the valid hits
-                draw_points(valid_hits.cpu().numpy(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
-                print(f"[INFO] Valid raycast hits for environment {env_id}: {valid_hits.shape[0]}")
-            else:
-                print(f"[WARN] No valid raycast hits for environment {env_id}.")
+        # for env_id in range(num_envs):
+        #     hits_env = hits[env_id]  # shape (R, 3)
+        #     valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
+        #     valid_hits = hits_env[valid_mask]  # shape (V, 3)
+        #     if valid_hits.shape[0] > 0:
+        #         # Draw the valid hits
+        #         draw_points(valid_hits.cpu().numpy(), color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+        #         print(f"[INFO] Valid raycast hits for environment {env_id}: {valid_hits.shape[0]}")
+        #     else:
+        #         print(f"[WARN] No valid raycast hits for environment {env_id}.")
         if count % 50 == 0:
+            # lateral drift from the curved path to straight path
             root_state = robot.data.default_root_state.clone()
             for i in range(num_envs):
                 path = curved_paths[i]
