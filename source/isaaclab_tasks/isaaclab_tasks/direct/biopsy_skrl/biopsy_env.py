@@ -66,7 +66,7 @@ from isaaclab.utils import configclass, convert_dict_to_backend
 from isaaclab.utils.io import dump_pickle, load_pickle
 
 # Math utilities
-from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, sample_uniform, euler_xyz_from_quat
+from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, quat_inv, euler_xyz_from_quat, axis_angle_from_quat
 
 # Visualization and markers
 from isaaclab.markers import VisualizationMarkers
@@ -148,9 +148,9 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 
     raycast_camera_vessel = RayCasterCameraCfg(
         prim_path="{ENV_REGEX_NS}/needle",
-        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel"],
-        update_period=0.1,
-        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0) ,convention="world"),
+        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel", "{ENV_REGEX_NS}/Tumor"],
+        update_period=1/60,
+        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0) ,convention="world"),
         data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
         debug_vis=False,
         max_distance=0.01,
@@ -162,21 +162,21 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    raycast_camera_tumor = RayCasterCameraCfg(
-        prim_path="{ENV_REGEX_NS}/needle",
-        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
-        update_period=0.1,
-        offset=RayCasterCameraCfg.OffsetCfg(pos=(-0.0012, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0), convention="world"),
-        data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
-        debug_vis=False,
-        max_distance=0.01,
-        pattern_cfg=patterns.PinholeCameraPatternCfg(
-            focal_length=24.0,
-            horizontal_aperture=20.955,
-            height=420,
-            width=640,
-        ),
-    )
+    # raycast_camera_tumor = RayCasterCameraCfg(
+    #     prim_path="{ENV_REGEX_NS}/needle",
+    #     mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
+    #     update_period=0.1,
+    #     offset=RayCasterCameraCfg.OffsetCfg(pos=(-0.0012, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0), convention="world"),
+    #     data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
+    #     debug_vis=False,
+    #     max_distance=0.01,
+    #     pattern_cfg=patterns.PinholeCameraPatternCfg(
+    #         focal_length=24.0,
+    #         horizontal_aperture=20.955,
+    #         height=420,
+    #         width=640,
+    #     ),
+    # )
 
     raycast_vessel = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/needle",
@@ -477,12 +477,19 @@ class BiopsyDirectEnv(DirectRLEnv):
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
         frame_marker_cfg.markers["frame"].scale = (0.001, 0.001, 0.001)
         self.needle_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/World/envs/env_0/needle/geometry/mesh"))
+        self.raycast_cam_marker = VisualizationMarkers(
+            frame_marker_cfg.replace(prim_path="/World/envs/env_0/raycast_camera_vessel/geometry/mesh")
+        )
+        self.raycast_vessel_marker = VisualizationMarkers(
+            frame_marker_cfg.replace(prim_path="/World/envs/env_0/raycast_vessel/geometry/mesh")
+        )
 
         # Observation space terms:
         self.pcd = o3d.geometry.PointCloud()  # Placeholder for point cloud data
         self.prev_normalized_progress = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         self.prev_deviation = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         self.prev_tooltip_pos = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
+        self.danger_bins = torch.zeros((self.num_envs, 16), dtype=torch.float32, device=self.device)  # Danger bins for the raycaster
 
         # Rewards
         self.potentials = torch.zeros(self.num_envs, dtype=torch.float32, device=self.sim.device)
@@ -807,9 +814,14 @@ class BiopsyDirectEnv(DirectRLEnv):
             "heading_x": heading_x,                                    # [B,1]
             "heading_y": heading_y,                                    # [B,1]
             "heading_z": heading_z,                                    # [B,1]
+            "danger_bins": self.danger_bins,                        # [B, 16]
         }
+        print(f"[DEBUG-STEP] Observations at step {self.common_step_counter}: {obs}")
+        self.boundary_check_vessel()
+        self.distance_to_vessel()
+
         if self.num_envs == 1:
-            self.update_obs_ui(obs["heading_x"], obs["heading_y"], obs["heading_z"], obs["signed_delta_x"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor)
+            self.update_obs_ui(obs["heading_x"], obs["heading_y"], obs["heading_z"], obs["signed_delta_x"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor, self.danger_bins)
         return {"policy": obs}
 
     def _get_rewards(self):  # TODO: to get calculated Rewards
@@ -881,7 +893,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         signed_delta_x,   # Signed ΔX
         signed_delta_z,   # Signed ΔZ
         deviation_t,      # Lateral deviation
-        d_ttip_tumor      # Distance tip→tumor
+        d_ttip_tumor,     # Distance tip→tumor
+        danger_bins       # Danger bins
     ):
         #print(f"[DEBUG]: {heading_t}, {heading_y}, {heading_z}, {signed_delta_y}, {signed_delta_z}, {deviation_t}, {d_ttip_tumor}")
         # helper: tensor/ndarray/python -> clean float 
@@ -919,60 +932,104 @@ class BiopsyDirectEnv(DirectRLEnv):
             if val_model is not None:
                 val_model.set_value(v)
 
-    # def update_obs_ui(self, heading_t, heading_y, heading_z, signed_delta_y, signed_delta_z, deviation_t, d_ttip_tumor):
-    #     updated_heading_t = float(heading_t.squeeze())
-    #     updated_heading_y = float(heading_y.squeeze())
-    #     updated_heading_z = float(heading_z.squeeze())
-    #     print(f"Shape and Type of: {signed_delta_y} {signed_delta_y.shape} and {type(signed_delta_y)}")
-    #     print(f"Shape and Type of: {signed_delta_z} {signed_delta_z.shape} and {type(signed_delta_z)}")
-    #     print(f"Shape and Type of: {deviation_t} {deviation_t.shape} and {type(deviation_t)}")
-    #     print(f"Shape and Type of: {d_ttip_tumor} {d_ttip_tumor.shape} and {type(d_ttip_tumor)}")
-    #     updated_signed_delta_y = float(signed_delta_y.squeeze())
-    #     updated_signed_delta_z = float(signed_delta_z.squeeze())
-    #     updated_deviation_t = float(deviation_t.squeeze())
-    #     updated_d_ttip_tumor = float(d_ttip_tumor)
+    def visualize_vessel_danger(self, env_id: int,
+                                filtered_hits: torch.Tensor,
+                                current_pose: torch.Tensor,
+                                n_sectors: int = 16,
+                                radius_m: float = 0.002,     # scan radius in meters
+                                threshold_cm: float = 0.05): # threshold in cm (e.g. 0.2 cm = 2 mm)
+        """
+        Visualize rays around needle tip, colored by vessel proximity.
 
-    #     self.ui_instance._plot_data.append(updated_heading_t)
-    #     if len(self.ui_instance._plot_data) > 360:
-    #         self.ui_instance._plot_data.pop(0)
-    #     self.ui_instance._models["timeseries_plot"].set_data(*self.ui_instance._plot_data)
-    #     self.ui_instance._models["timeseries_plot_val"].set_value(updated_heading_t)
+        Args:
+            env_id: environment index
+            filtered_hits: (N,3) vessel points in world frame
+            current_pose: (4,4) pose of needle in world frame
+            n_sectors: number of angular sectors
+            radius_m: maximum OCT/cylinder radius in meters
+            threshold_cm: distance threshold for "dangerous" in centimeters
+        """
 
-    #     self.ui_instance._plot_data_1.append(updated_heading_y)
-    #     if len(self.ui_instance._plot_data_1) > 360:
-    #         self.ui_instance._plot_data_1.pop(0)
-    #     self.ui_instance._models["timeseries_plot_1"].set_data(*self.ui_instance._plot_data_1)
-    #     self.ui_instance._models["timeseries_plot_val_1"].set_value(updated_heading_y)
+        if filtered_hits is None or filtered_hits.numel() == 0:
+            print(f"[env {env_id}] NO FILTERED HITS")
+            return
+        
+        tip = current_pose[:3, 3].cpu().numpy()   
+        R = current_pose[:3, :3].cpu().numpy()    
 
-    #     self.ui_instance._plot_data_2.append(updated_heading_z)
-    #     if len(self.ui_instance._plot_data_2) > 360:
-    #         self.ui_instance._plot_data_2.pop(0)
-    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
-    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+        hits_local = self.get_vector_in_needle_frame(
+            filtered_hits.unsqueeze(0),          
+            current_pose.unsqueeze(0)             
+        ).squeeze(0).cpu().numpy()                
 
-    #     self.ui_instance._plot_data_3.append(updated_signed_delta_y)
-    #     if len(self.ui_instance._plot_data_3) > 360:
-    #         self.ui_instance._plot_data_3.pop(0)
-    #     self.ui_instance._models["timeseries_plot_3"].set_data(*self.ui_instance._plot_data_3)
-    #     self.ui_instance._models["timeseries_plot_val_3"].set_value(updated_signed_delta_y)
+        x, y = hits_local[:, 0], hits_local[:, 1]
+        r = np.sqrt(x**2 + y**2)                  
+        ang = np.arctan2(y, x)
 
-    #     self.ui_instance._plot_data_1.append(updated_heading_y)
-    #     if len(self.ui_instance._plot_data_1) > 360:
-    #         self.ui_instance._plot_data_1.pop(0)
-    #     self.ui_instance._models["timeseries_plot_1"].set_data(*self.ui_instance._plot_data_1)
-    #     self.ui_instance._models["timeseries_plot_val_1"].set_value(updated_heading_y)
+        ang2 = (ang + 2*np.pi) % (2*np.pi)
+        bins = np.floor(ang2 * n_sectors / (2*np.pi)).astype(int)
 
-    #     self.ui_instance._plot_data_2.append(updated_heading_z)
-    #     if len(self.ui_instance._plot_data_2) > 360:
-    #         self.ui_instance._plot_data_2.pop(0)
-    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
-    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+        r_min = np.full(n_sectors, np.inf)
+        print(f"Original R_MIN: {r_min}")
+        closest_idx = np.full(n_sectors, -1)
+        for i, sec_id in enumerate(bins):
+            if r[i] < r_min[sec_id]:
+                r_min[sec_id] = r[i]
+                closest_idx[sec_id] = i
+        
+        threshold_m = 0.0005
+        danger = np.zeros(n_sectors)
+        for b in range(n_sectors):
+            if np.isfinite(r_min[b]):
+                if r_min[b] <= threshold_m:
+                    danger[b] = 1.0
+                elif r_min[b] <= radius_m:
+                    danger[b] = max(0.0, 1.0 - (r_min[b] / radius_m))
+                else:
+                    danger[b] = 0.0
+            print(f"[env {env_id}] sector {b}: r_min={r_min[b]:.3f}, danger={danger[b]:.3f}")
+        hits_world = (hits_local @ R.T) + tip
+        for b in range(n_sectors):
+            idx = closest_idx[b]
+            if idx >= 0:
+                end_world = hits_world[idx]
+                if danger[b] > 0.6:
+                    col = "red"
+                elif danger[b] > 0.2:
+                    col = "yellow"
+                else:
+                    col = "green"
+                self.draw_lines(tip, end_world, color=col)
 
-    #     self.ui_instance._plot_data_2.append(updated_heading_z)
-    #     if len(self.ui_instance._plot_data_2) > 360:
-    #         self.ui_instance._plot_data_2.pop(0)
-    #     self.ui_instance._models["timeseries_plot_2"].set_data(*self.ui_instance._plot_data_2)
-    #     self.ui_instance._models["timeseries_plot_val_2"].set_value(updated_heading_z)
+            # --- Matplotlib polar plot ---
+        fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(10, 10))
+
+        # Plot all hits
+        ax.scatter(ang2, r, s=10, c="blue", alpha=0.5, label="Vessel hits")
+
+        # Plot closest hit per sector, colored by danger
+        for b in range(n_sectors):
+            idx = closest_idx[b]
+            if idx >= 0:
+                if danger[b] > 0.6:
+                    col = "red"
+                elif danger[b] > 0.2:
+                    col = "yellow"
+                else:
+                    col = "green"
+                ax.scatter(ang2[idx], r[idx], s=40, c=col, edgecolors="k", zorder=3)
+
+        ax.set_ylim([0, radius_m])
+        ax.set_title(f"Env {env_id} Vessel Danger Map")
+        ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
+        ax.set_xticks(np.linspace(0, 2*np.pi, n_sectors, endpoint=False))
+        datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        plt.savefig(f"{SAVE_PATH}/{datetime_str}_env_{env_id}_vessel_danger_map.png", bbox_inches="tight")
+        plt.close(fig)
+
+        print(f"[env {env_id}] sector danger: {danger}")
+        return danger
+
 
     def get_vector_in_needle_frame(self, vector: torch.Tensor, current_pose: torch.Tensor) -> torch.Tensor:
         """
@@ -1436,7 +1493,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         #     self.draw_lines(top_circle[i], top_circle[(i + 1) % num_points], color="yellow")
         #     self.draw_lines(bottom_circle[i], bottom_circle[(i + 1) % num_points], color="yellow")
 
-    def filter_hits_in_cylinder(self, hits_np, center, axis, radius=0.01, height=0.05):
+    def filter_hits_in_cylinder(self, hits_np, center, axis, radius=0.005, height=0.005):
         """
         Filters 3D points inside a cylinder centered at `center`, aligned along `axis`.
         """
@@ -1467,8 +1524,8 @@ class BiopsyDirectEnv(DirectRLEnv):
                 hits_np=valid_hits_np,
                 center=needle_center,
                 axis=axis,
-                radius=0.05,
-                height=0.25
+                radius=0.005,
+                height=0.005
             )
 
             print(f"[env {env_id}] Hits inside cylinder Tumor: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
@@ -1484,7 +1541,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         
         # Get all needle positions and orientations
         positions = self._needle.data.root_link_pos_w  
-        quats = self._needle.data.root_link_quat_w     
+        quats = self._needle.data.root_link_quat_w    
+        rotations = matrix_from_quat(quats) 
+        current_pose = torch.eye(4, device=self.device).repeat(self.num_envs, 1, 1) 
+        current_pose[:, :3, :3] = rotations
+        current_pose[:, :3, 3] = positions
 
         # Convert quaternions to rotation matrices → z-axes (insertion directions)
         quats_np = quats.cpu().numpy()  
@@ -1509,17 +1570,30 @@ class BiopsyDirectEnv(DirectRLEnv):
                 hits_np=hits_np,
                 center=center,
                 axis=axis,
-                radius=0.05,
-                height=0.25,
+                radius=0.002,
+                height=0.003,
             )
-
             if not self.cfg.viewer.headless and filtered_hits is not None:
-                self.draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0)
+                #self.draw_points(filtered_hits, color=(1.0, 0.0, 0.0, 1.0), size=4.0)
+                try:
+                    start = self.tool_tip_pos[env_id] 
+                    end = filtered_hits           
+                    start_batch = start.repeat(end.shape[0], 1)  
+                    self.draw_lines(start_batch, end, color="red")
 
-            if filtered_hits.shape[0] == 0:
-                omni.log.warn(f"[env {env_id}] No valid hits inside cylinder.")
-                sparse_points_all.append(None)
-                continue
+                except Exception as e:
+                    print(f"Error drawing lines: {e}")
+
+                print("Calling DANGER visualization")
+                self.danger_bins = self.visualize_vessel_danger(env_id,  torch.tensor(filtered_hits, device=self.device, dtype=torch.float32), current_pose[env_id])
+                print(f"Danger Bins: {self.danger_bins}")
+            return self.danger_bins
+
+
+        #     if filtered_hits.shape[0] == 0:
+        #         omni.log.warn(f"[env {env_id}] No valid hits inside cylinder.")
+        #         sparse_points_all.append(None)
+        #         continue
 
             # Prepare point cloud
             self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
