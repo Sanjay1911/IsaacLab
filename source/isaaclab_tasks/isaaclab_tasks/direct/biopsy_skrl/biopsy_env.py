@@ -11,7 +11,7 @@ import os, sys
 import random
 import traceback
 from datetime import datetime
-
+import time
 # Numerical & scientific computing
 import numpy as np
 np.set_printoptions(threshold=sys.maxsize)
@@ -208,7 +208,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 @configclass
 class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     #env
-    episode_length_s = 4.166  # 250 timesteps
+    episode_length_s = 2.0833  # 250 timesteps
     decimation = 1
     action_space = 3
     observation_space = 23
@@ -234,9 +234,9 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     dof_velocity_scale = 0.1
 
     # reward scales
-    w_progress = 2.0
+    w_progress = 5.0
     w_deviation = 2.0
-    w_collision = 1.5
+    w_collision = 1.0
     w_inside_tumor = 20.0
     w_action = 0.5  
 
@@ -526,7 +526,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         """
         # print(f"[DEBUG-STEP] Pre-physics steps called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         self.actions = actions.clone()
-        print("New action update received at", self.common_step_counter) 
+        #print("New action update received at", self.common_step_counter) 
         if isinstance(self.single_action_space, gym.spaces.Box):
             low = torch.tensor(self.single_action_space.low, device=self.device)
             high = torch.tensor(self.single_action_space.high, device=self.device)
@@ -619,7 +619,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         new_root_state[:, 3:7] = new_quat
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
         self._needle.write_root_velocity_to_sim(torch.zeros_like(new_root_state[:, 7:]))
-        self.needle_marker.visualize(new_pos, new_quat)
+        
         #self._needle.reset()
         # print(f"[DEBUG-STEP] Action applied at time step: {self.common_step_counter}")
         if not self.cfg.viewer.headless:
@@ -720,9 +720,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         dist_thresh = self.TUMOR_REACH_THRESHOLD      
         s_tol = getattr(self, "S_PROGRESS_TOLERANCE", 1e-3)  
         success = (
-            (d_ttip_tumor <= dist_thresh) &
-            (s_unclamped >= 1.0 - s_tol) &
-            (s_unclamped <= 1.0 + s_tol)
+            (d_ttip_tumor <= dist_thresh) # &
+            #(s_unclamped >= 1.0 - s_tol) &
+            #(s_unclamped <= 1.0 + s_tol)
         )
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)
         overshoot_positive = s_unclamped > (1.0 + s_tol)
@@ -816,7 +816,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             "heading_z": heading_z,                                    # [B,1]
             "danger_bins": self.danger_bins,                        # [B, 16]
         }
-        print(f"[DEBUG-STEP] Observations at step {self.common_step_counter}: {obs}")
+        # print(f"[DEBUG-STEP] Observations at step {self.common_step_counter}: {obs}")
         self.boundary_check_vessel()
         self.distance_to_vessel()
 
@@ -836,45 +836,90 @@ class BiopsyDirectEnv(DirectRLEnv):
         progress_t_dt = obs["normalized_depth_t_ndt"]      
         deviation_t = obs["deviation_t"]                          
         action = obs["current_action"]      
-        d_ttip_tumor = self.d_ttip_tumor.clone()  # Distance from tooltip to tumor               
-        total_reward = self.compute_reward(progress_t, progress_t_dt, deviation_t, action, d_ttip_tumor)
+        d_ttip_tumor = self.d_ttip_tumor.clone()  # Distance from tooltip to tumor     
+        danger_bins = obs["danger_bins"]         
+        total_reward = self.compute_reward(progress_t, progress_t_dt, deviation_t, action, d_ttip_tumor, danger_bins)
+        if self.order_checker:
+            self.order_checker+=1
+            print(f"[ORDER DEBUG]Order at Rewards step: {self.order_checker}")
         return total_reward
 
     def _get_states(self):  # TODO: States for Asymmetric RL
         pass
 
     #@torch.jit.script
-    def compute_reward(self, progress_t, progress_t_dt, deviation_t, action, d_ttip_tumor):  # TODO: actual Rewards
+    def compute_reward(self, progress_t, progress_t_dt, deviation_t, action, d_ttip_tumor, danger_bins):
         """
         Reward structure:
         + reward for being closer to tumor
-        - penalty for being close to vessels
+        + reward for lower deviation from preop path
+        + reward for progressing towards the tumor
         - penalty for high real-time collision score
-        + bonus for being inside tumor
         """
         progress = (progress_t - progress_t_dt).squeeze(-1)
-        reward_progress = torch.clamp(progress / (self.INSERTION_DEPTH + 1e-9), -1.0, 1.0)    # TODO: This reward is always 2 or -2 meaning it is clamped in forward or backward direction, but this tells if the agent is going backwards
+        reward_progress = torch.clamp(progress / (self.INSERTION_DEPTH + 1e-9), -1.0, 1.0)
         reward_deviation = torch.exp(-self.K_DEV * deviation_t.squeeze(-1) ** 2)
         reward_reached_tumor = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).float()
-        a = action if action.dim()==1 else action.squeeze(-1)              
-        reward_action = torch.abs(a) / (0.5 * torch.pi)  
+        a = action if action.dim() == 1 else action.squeeze(-1)
+
+        a_deg = torch.rad2deg(a) % 360.0                   
+        offset = 11.25
+        a_bin = torch.div((a_deg - offset + 360.0) % 360.0, 22.5, rounding_mode="floor").long()
+
+
+        if danger_bins.dim() == 1:
+            danger_bins = danger_bins.unsqueeze(0)
+
+        danger_a = torch.gather(danger_bins, 1, a_bin.unsqueeze(-1)).squeeze(-1)
+
+        reward_collision = torch.zeros_like(danger_a)
+        reward_collision = torch.where(danger_a == 1.0, -50.0, reward_collision)
+        reward_collision = torch.where(danger_a == 0.5, -25.0, reward_collision)
+        reward_collision = torch.where(danger_a == 0.0, +0.0, reward_collision)
+
+        if self.previous_twist_action is not None:
+            reward_action = torch.abs(a_bin - self.previous_twist_action.long()) / 16.0
+        else:
+            reward_action = torch.abs(a_bin) / 16.0
 
         reward = (
             (self.cfg.w_progress * reward_progress)
             + (self.cfg.w_deviation * reward_deviation)
             + (self.cfg.w_inside_tumor * reward_reached_tumor)
-            #- (self.cfg.w_action * reward_action)
+            + (self.cfg.w_collision * reward_collision)
         )
+        reward = torch.clip(reward, min=-100.0, max=100.0)
+
+        # -------------------
+        # Debug logs
+        # -------------------
+        print("\n=== REWARD DEBUG ===")
+        print(f"Original action (rad): {a}")
+        print(f"Action in degrees    : {a_deg.detach().cpu().numpy()}")
+        print(f"Action bin index     : {a_bin.detach().cpu().numpy()}")
+        print(f"Danger bins          : {danger_bins.detach().cpu().numpy()}")
+        print(f"Danger value chosen  : {danger_a.detach().cpu().numpy()}")
+        print(f"Reward progress      : {reward_progress.detach().cpu().numpy()}")
+        print(f"Reward deviation     : {reward_deviation.detach().cpu().numpy()}")
+        print(f"Reward reached tumor : {reward_reached_tumor.detach().cpu().numpy()}")
+        print(f"Reward collision     : {reward_collision.detach().cpu().numpy()}")
+        print(f"Final reward         : {reward.detach().cpu().numpy()}")
+        print("====================\n")
+
+        if reward_collision.item() == -50.0:
+            time.sleep(1)
+        # -------------------
+        # Update buffers
+        # -------------------
         self.extras.update({
             "reward_progress": self.cfg.w_progress * reward_progress,
             "reward_deviation": self.cfg.w_deviation * reward_deviation,
             "reward_reached_tumor": self.cfg.w_inside_tumor * reward_reached_tumor,
-            "reward_action": self.cfg.w_action * reward_action
+            "reward_collision": self.cfg.w_collision * reward_collision,
         })
-        reward = torch.clip(reward, min=-100.0, max=100.0)
-        # print(f"[DEBUG] Total reward after clipping: {reward}")
-        # print(f"[DEBUG] reward shape: {reward.shape}")
-        return reward  # ensure shape [B]
+
+        self.previous_twist_action = a_bin.clone().detach()
+        return reward
 
     # ## --------------------------------------- ## #
     # ## Additional Utility Functions for Visualization and Debugging ## #
@@ -937,7 +982,8 @@ class BiopsyDirectEnv(DirectRLEnv):
                                 current_pose: torch.Tensor,
                                 n_sectors: int = 16,
                                 radius_m: float = 0.002,     # scan radius in meters
-                                threshold_cm: float = 0.05): # threshold in cm (e.g. 0.2 cm = 2 mm)
+                                threshold_cm: float = 0.05,
+                                plot: bool = True): # threshold in cm (e.g. 0.2 cm = 2 mm)
         """
         Visualize rays around needle tip, colored by vessel proximity.
 
@@ -952,8 +998,8 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         if filtered_hits is None or filtered_hits.numel() == 0:
             print(f"[env {env_id}] NO FILTERED HITS")
-            return
-        
+            return torch.zeros(n_sectors, dtype=torch.float32, device=self.device)
+
         tip = current_pose[:3, 3].cpu().numpy()   
         R = current_pose[:3, :3].cpu().numpy()    
 
@@ -965,70 +1011,78 @@ class BiopsyDirectEnv(DirectRLEnv):
         x, y = hits_local[:, 0], hits_local[:, 1]
         r = np.sqrt(x**2 + y**2)                  
         ang = np.arctan2(y, x)
-
         ang2 = (ang + 2*np.pi) % (2*np.pi)
-        bins = np.floor(ang2 * n_sectors / (2*np.pi)).astype(int)
+        offset = np.deg2rad(11.25)  # ≈ 0.19635 rad
+        ang_shifted = (ang2 - offset + 2*np.pi) % (2*np.pi)
+        bins = np.floor(ang_shifted * n_sectors / (2*np.pi)).astype(int)
+
 
         r_min = np.full(n_sectors, np.inf)
-        print(f"Original R_MIN: {r_min}")
+        #print(f"Original R_MIN: {r_min}")
         closest_idx = np.full(n_sectors, -1)
         for i, sec_id in enumerate(bins):
             if r[i] < r_min[sec_id]:
                 r_min[sec_id] = r[i]
                 closest_idx[sec_id] = i
         
-        threshold_m = 0.0005
+        needle_radius = 0.002 / 2     # 1.0 mm
+        safety_margin = 0.0005        # 0.5 mm
+        threshold_m = needle_radius + safety_margin
+
         danger = np.zeros(n_sectors)
         for b in range(n_sectors):
             if np.isfinite(r_min[b]):
                 if r_min[b] <= threshold_m:
-                    danger[b] = 1.0
+                    danger[b] = 1.0   # definite collision (inside needle body + safety margin)
                 elif r_min[b] <= radius_m:
-                    danger[b] = max(0.0, 1.0 - (r_min[b] / radius_m))
+                    # soft penalty: closer → higher danger
+                    danger[b] = max(0.0, 1.0 - (r_min[b] - needle_radius) / (radius_m - needle_radius))
                 else:
                     danger[b] = 0.0
-            print(f"[env {env_id}] sector {b}: r_min={r_min[b]:.3f}, danger={danger[b]:.3f}")
+            #print(f"[env {env_id}] sector {b}: r_min={r_min[b]:.3f}, danger={danger[b]:.3f}")
         hits_world = (hits_local @ R.T) + tip
         for b in range(n_sectors):
             idx = closest_idx[b]
             if idx >= 0:
                 end_world = hits_world[idx]
-                if danger[b] > 0.6:
+                if danger[b] == 1.0:
                     col = "red"
-                elif danger[b] > 0.2:
+                elif danger[b] > 0.5:
                     col = "yellow"
                 else:
                     col = "green"
                 self.draw_lines(tip, end_world, color=col)
 
             # --- Matplotlib polar plot ---
-        fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(10, 10))
+        if plot is True:
+            fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(10, 10))
 
-        # Plot all hits
-        ax.scatter(ang2, r, s=10, c="blue", alpha=0.5, label="Vessel hits")
+            # Plot all hits
+            ax.scatter(ang2, r, s=10, c="blue", alpha=0.5, label="Vessel hits")
 
-        # Plot closest hit per sector, colored by danger
-        for b in range(n_sectors):
-            idx = closest_idx[b]
-            if idx >= 0:
-                if danger[b] > 0.6:
-                    col = "red"
-                elif danger[b] > 0.2:
-                    col = "yellow"
-                else:
-                    col = "green"
-                ax.scatter(ang2[idx], r[idx], s=40, c=col, edgecolors="k", zorder=3)
+            # Plot closest hit per sector, colored by danger
+            for b in range(n_sectors):
+                idx = closest_idx[b]
+                if idx >= 0:
+                    if danger[b] > 0.6:
+                        col = "red"
+                    elif danger[b] > 0.2:
+                        col = "yellow"
+                    else:
+                        col = "green"
+                    ax.scatter(ang2[idx], r[idx], s=40, c=col, edgecolors="k", zorder=3)
 
-        ax.set_ylim([0, radius_m])
-        ax.set_title(f"Env {env_id} Vessel Danger Map")
-        ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
-        ax.set_xticks(np.linspace(0, 2*np.pi, n_sectors, endpoint=False))
-        datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        plt.savefig(f"{SAVE_PATH}/{datetime_str}_env_{env_id}_vessel_danger_map.png", bbox_inches="tight")
-        plt.close(fig)
+            ax.set_ylim([0, radius_m])
+            ax.set_title(f"Env {env_id} Vessel Danger Map")
+            ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1))
+            ax.set_xticks(np.linspace(0, 2*np.pi, n_sectors, endpoint=False))
+            datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            plt.savefig(f"{SAVE_PATH}/{datetime_str}_env_{env_id}_vessel_danger_map.png", bbox_inches="tight")
+            plt.close(fig)
 
-        print(f"[env {env_id}] sector danger: {danger}")
-        return danger
+        #print(f"[env {env_id}] sector danger: {danger} {danger.shape}")
+        danger_tensor = torch.tensor(danger, dtype=torch.float32, device=self.device)
+        return danger_tensor
 
 
     def get_vector_in_needle_frame(self, vector: torch.Tensor, current_pose: torch.Tensor) -> torch.Tensor:
@@ -1584,10 +1638,10 @@ class BiopsyDirectEnv(DirectRLEnv):
                 except Exception as e:
                     print(f"Error drawing lines: {e}")
 
-                print("Calling DANGER visualization")
-                self.danger_bins = self.visualize_vessel_danger(env_id,  torch.tensor(filtered_hits, device=self.device, dtype=torch.float32), current_pose[env_id])
-                print(f"Danger Bins: {self.danger_bins}")
-            return self.danger_bins
+            #print("Calling DANGER visualization")
+            self.danger_bins[env_id] = self.visualize_vessel_danger(env_id,  torch.tensor(filtered_hits, device=self.device, dtype=torch.float32), current_pose[env_id])
+            #print(f"Danger Bins: {self.danger_bins}")
+        return self.danger_bins
 
 
         #     if filtered_hits.shape[0] == 0:
@@ -1842,11 +1896,13 @@ class BiopsyDirectEnv(DirectRLEnv):
         color_red = (1.0, 0.0, 0.0, 1.0)  # red line
         if color == "yellow":
             colors = [color_yellow for _ in range(b)]
+            sizes = [3.0 for _ in range(b)]
         elif color == "red":
             colors = [color_red for _ in range(b)]
+            sizes = [5.0 for _ in range(b)]
         else:
             colors = [color_green for _ in range(b)]
-        sizes = [1.0 for _ in range(b)]
+            sizes = [1.0 for _ in range(b)]
         # print("Drawing line from", start_pose, "to", end_pose)
         self.draw.draw_lines(
             start_pose.tolist(),
