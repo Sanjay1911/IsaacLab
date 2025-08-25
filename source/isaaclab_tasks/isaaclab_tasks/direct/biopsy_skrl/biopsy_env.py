@@ -686,6 +686,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device)
         twist_angles_rad = torch.zeros((self.num_envs,), device=self.device)  # or any dummy twist
         self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)  # Shape: [B, 2]
+        self.previous_twist_action[env_ids] = 0.0 
+        self.danger_bins = torch.zeros((self.num_envs, 16), dtype=torch.float32, device=self.device) # reset bins to zero after reset as there are no update calls and hence no values
         # # Reset tumor poses using sample_uniform TODO: Uncomment if needed
         # tumor_world_poses = self.tumor.get_world_poses(env_ids)
         # position, quaternion = tumor_world_poses
@@ -786,7 +788,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         heading_x = heading_vec_needle_frame[:, 0]
         heading_y = heading_vec_needle_frame[:, 1]
         heading_z = heading_vec_needle_frame[:, 2]
-
+        danger_bins = self.boundary_check_vessel()
         self.extras.update({
             "env_ids": self.env_ids.clone().detach(),                              # [B]
             "active_path_index": self.active_path_index.clone().detach(),          # [B]
@@ -823,7 +825,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.distance_to_vessel()
 
         if self.num_envs == 1:
-            self.update_obs_ui(obs["heading_x"], obs["heading_y"], obs["heading_z"], obs["signed_delta_x"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor, self.danger_bins)
+            self.update_obs_ui(obs["heading_x"], obs["heading_y"], obs["heading_z"], obs["signed_delta_x"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor)#, self.danger_bins)
+        self.prev_obs_for_reward = {k: v.clone().detach() for k, v in obs.items()}
+        # print(f"Observation at {self.common_step_counter} are {self.prev_obs_for_reward}")
         return {"policy": obs}
 
     def _get_rewards(self):  # TODO: to get calculated Rewards
@@ -833,7 +837,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         """
         # print(f"[DEBUG-STEP] Rewards called at time step: {self.common_step_counter}, {self._sim_step_counter}")
-        obs = self._get_observations()["policy"]
+        obs = self.prev_obs_for_reward
         progress_t = obs["normalized_depth_t"]             
         progress_t_dt = obs["normalized_depth_t_ndt"]      
         deviation_t = obs["deviation_t"]                          
@@ -1644,7 +1648,12 @@ class BiopsyDirectEnv(DirectRLEnv):
                     print(f"Error drawing lines: {e}")
 
             #print("Calling DANGER visualization")
-            self.danger_bins[env_id] = self.visualize_vessel_danger(env_id,  torch.tensor(filtered_hits, device=self.device, dtype=torch.float32), current_pose[env_id])
+            danger_row = self.visualize_vessel_danger(
+            env_id,
+            torch.tensor(filtered_hits, device=self.device, dtype=torch.float32),
+            current_pose[env_id]
+            )                     # shape: (16,)
+            self.danger_bins[env_id].copy_(danger_row)
             #print(f"Danger Bins: {self.danger_bins}")
         return self.danger_bins
 
@@ -1654,23 +1663,23 @@ class BiopsyDirectEnv(DirectRLEnv):
         #         sparse_points_all.append(None)
         #         continue
 
-            # Prepare point cloud
-            self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
+        #     # Prepare point cloud
+        #     self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
 
-            if len(self.pcd.points) < 64:
-                points_np = np.asarray(self.pcd.points)
-                num_missing = 64 - len(points_np)
-                idxs = np.random.choice(len(points_np), num_missing, replace=True)
-                noise = np.random.normal(loc=0.0, scale=1e-4, size=(num_missing, 3))
-                padded = np.concatenate([points_np, points_np[idxs] + noise], axis=0)
-                sparse = torch.tensor(padded, dtype=torch.float32, device=self.device)
-            else:
-                sparse_pcd = self.pcd.farthest_point_down_sample(64)
-                sparse = torch.tensor(np.asarray(sparse_pcd.points), dtype=torch.float32, device=self.device)
+        #     if len(self.pcd.points) < 64:
+        #         points_np = np.asarray(self.pcd.points)
+        #         num_missing = 64 - len(points_np)
+        #         idxs = np.random.choice(len(points_np), num_missing, replace=True)
+        #         noise = np.random.normal(loc=0.0, scale=1e-4, size=(num_missing, 3))
+        #         padded = np.concatenate([points_np, points_np[idxs] + noise], axis=0)
+        #         sparse = torch.tensor(padded, dtype=torch.float32, device=self.device)
+        #     else:
+        #         sparse_pcd = self.pcd.farthest_point_down_sample(64)
+        #         sparse = torch.tensor(np.asarray(sparse_pcd.points), dtype=torch.float32, device=self.device)
 
-            sparse_points_all.append(sparse)
+        #     sparse_points_all.append(sparse)
 
-        return sparse_points_all 
+        # return sparse_points_all 
 
     def distance_to_vessel(self):
         """
