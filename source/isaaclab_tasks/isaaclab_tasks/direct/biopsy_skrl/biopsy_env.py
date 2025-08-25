@@ -76,6 +76,7 @@ from isaaclab.markers.config import FRAME_MARKER_CFG
 import open3d as o3d
 import matplotlib.pyplot as plt
 
+SAVE_PATH = "/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/path_comparison/plots/"
 @torch.jit.script
 def linspace(start: torch.Tensor, stop: torch.Tensor, num: int):
     """
@@ -234,8 +235,8 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     dof_velocity_scale = 0.1
 
     # reward scales
-    w_progress = 5.0
-    w_deviation = 2.0
+    w_progress = 0.25
+    w_deviation = 5.0
     w_collision = 1.0
     w_inside_tumor = 20.0
     w_action = 0.5  
@@ -719,6 +720,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         s_unclamped = projected_dist / (path_length + eps)
         dist_thresh = self.TUMOR_REACH_THRESHOLD      
         s_tol = getattr(self, "S_PROGRESS_TOLERANCE", 1e-3)  
+        self.d_ttip_tumor = d_ttip_tumor.clone()
         success = (
             (d_ttip_tumor <= dist_thresh) # &
             #(s_unclamped >= 1.0 - s_tol) &
@@ -861,7 +863,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         reward_deviation = torch.exp(-self.K_DEV * deviation_t.squeeze(-1) ** 2)
         reward_reached_tumor = (d_ttip_tumor <= self.TUMOR_REACH_THRESHOLD).float()
         a = action if action.dim() == 1 else action.squeeze(-1)
-
+        d_mm = deviation_t.squeeze(-1) * 1000.0  
+        reward_deviation_new = torch.exp(-0.2 * d_mm)    
+        reward_deviation_new = torch.where(d_mm > 20.0, -5.0, reward_deviation_new) 
+        #print(f"Reward deviation old {reward_deviation} vs Reward deviation new {reward_deviation_new}")
         a_deg = torch.rad2deg(a) % 360.0                   
         offset = 11.25
         a_bin = torch.div((a_deg - offset + 360.0) % 360.0, 22.5, rounding_mode="floor").long()
@@ -884,7 +889,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         reward = (
             (self.cfg.w_progress * reward_progress)
-            + (self.cfg.w_deviation * reward_deviation)
+            + (self.cfg.w_deviation * reward_deviation_new)
             + (self.cfg.w_inside_tumor * reward_reached_tumor)
             + (self.cfg.w_collision * reward_collision)
         )
@@ -900,7 +905,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         print(f"Danger bins          : {danger_bins.detach().cpu().numpy()}")
         print(f"Danger value chosen  : {danger_a.detach().cpu().numpy()}")
         print(f"Reward progress      : {reward_progress.detach().cpu().numpy()}")
-        print(f"Reward deviation     : {reward_deviation.detach().cpu().numpy()}")
+        print(f"Reward deviation     : {reward_deviation_new.detach().cpu().numpy()}")
         print(f"Reward reached tumor : {reward_reached_tumor.detach().cpu().numpy()}")
         print(f"Reward collision     : {reward_collision.detach().cpu().numpy()}")
         print(f"Final reward         : {reward.detach().cpu().numpy()}")
@@ -913,7 +918,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         # -------------------
         self.extras.update({
             "reward_progress": self.cfg.w_progress * reward_progress,
-            "reward_deviation": self.cfg.w_deviation * reward_deviation,
+            "reward_deviation": self.cfg.w_deviation * reward_deviation_new,
             "reward_reached_tumor": self.cfg.w_inside_tumor * reward_reached_tumor,
             "reward_collision": self.cfg.w_collision * reward_collision,
         })

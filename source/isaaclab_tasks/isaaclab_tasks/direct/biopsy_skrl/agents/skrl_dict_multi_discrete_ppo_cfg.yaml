@@ -55,12 +55,14 @@ agent:
   time_limit_bootstrap: False
   mixed_precision: False
   experiment:
-    directory: Isaac-Biopsy-Direct-Dict-MultiDiscrete-v1-Agent-Ludwig
+    directory: Isaac-Biopsy-Direct-Dict-MultiDiscrete-v1-Agent-Valentina
     experiment_name: ""
     write_interval: auto
     checkpoint_interval: auto
+  wandb: True
+  wandb_kwargs: {}
 
 trainer:
   class: SequentialTrainer
-  timesteps: 320000
+  timesteps: 64000
   environment_info: log
