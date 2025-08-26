@@ -76,7 +76,9 @@ from isaaclab.markers.config import FRAME_MARKER_CFG
 import open3d as o3d
 import matplotlib.pyplot as plt
 
-SAVE_PATH = "/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/path_comparison/plots/"
+SAVE_PATH = "/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/output/plots/2508"
+KAPPA = 400  # 1/m
+RCURV = 1 / KAPPA  # m
 @torch.jit.script
 def linspace(start: torch.Tensor, stop: torch.Tensor, num: int):
     """
@@ -147,38 +149,6 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
     )
 
-    raycast_camera_vessel = RayCasterCameraCfg(
-        prim_path="{ENV_REGEX_NS}/needle",
-        mesh_prim_paths=["{ENV_REGEX_NS}/Vessel", "{ENV_REGEX_NS}/Tumor"],
-        update_period=1/60,
-        offset=RayCasterCameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0) ,convention="world"),
-        data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
-        debug_vis=False,
-        max_distance=0.01,
-        pattern_cfg=patterns.PinholeCameraPatternCfg(
-            focal_length=24.0,
-            horizontal_aperture=20.955,
-            height=420,
-            width=640,
-        ),
-    )
-
-    # raycast_camera_tumor = RayCasterCameraCfg(
-    #     prim_path="{ENV_REGEX_NS}/needle",
-    #     mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
-    #     update_period=0.1,
-    #     offset=RayCasterCameraCfg.OffsetCfg(pos=(-0.0012, 0.0, 0.0), rot=(0, 0.0, 0.0, 1.0), convention="world"),
-    #     data_types=["distance_to_image_plane", "normals", "distance_to_camera"],
-    #     debug_vis=False,
-    #     max_distance=0.01,
-    #     pattern_cfg=patterns.PinholeCameraPatternCfg(
-    #         focal_length=24.0,
-    #         horizontal_aperture=20.955,
-    #         height=420,
-    #         width=640,
-    #     ),
-    # )
-
     raycast_vessel = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/needle",
         update_period=1 / 60,
@@ -189,19 +159,6 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
         pattern_cfg=patterns.LidarPatternCfg(
             channels=50, vertical_fov_range=[-180, 180], horizontal_fov_range=[-180, 180], horizontal_res=1.0
-        )
-    )
-
-    raycast_tumor = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/needle",
-        update_period=1 / 60,
-        offset=RayCasterCfg.OffsetCfg(pos=(0, 0, 0.0), rot=(0, 0.0, 0.0, 1.0)),
-        mesh_prim_paths=["{ENV_REGEX_NS}/Tumor"],
-        attach_yaw_only=False,
-        max_distance=0.01,
-        debug_vis=False,
-        pattern_cfg=patterns.LidarPatternCfg(
-            channels=50, vertical_fov_range=[-60, 60], horizontal_fov_range=[-20, 20], horizontal_res=1.0
         )
     )
 
@@ -235,11 +192,11 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     dof_velocity_scale = 0.1
 
     # reward scales
-    w_progress = 0.25
-    w_deviation = 5.0
+    w_progress = 2.0
+    w_deviation = 2.0
     w_collision = 1.0
     w_inside_tumor = 20.0
-    w_action = 0.5  
+    w_action = 0.5
 
 
 class BiopsyDirectEnv(DirectRLEnv):
@@ -257,22 +214,6 @@ class BiopsyDirectEnv(DirectRLEnv):
 
     def __init__(self, cfg: BiopsyDirectEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-        
-        def get_env_local_pose(env_pos: torch.Tensor, xformable: UsdGeom.Xformable, device: torch.device):
-            """Compute pose in env-local coordinates"""
-            world_transform = xformable.ComputeLocalToWorldTransform(0)
-            world_pos = world_transform.ExtractTranslation()
-            world_quat = world_transform.ExtractRotationQuat()
-
-            px = world_pos[0] - env_pos[0]
-            py = world_pos[1] - env_pos[1]
-            pz = world_pos[2] - env_pos[2]
-            qx = world_quat.imaginary[0]
-            qy = world_quat.imaginary[1]
-            qz = world_quat.imaginary[2]
-            qw = world_quat.real
-
-            return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
         
         if not self.cfg.viewer.headless:
             import omni.log
@@ -294,7 +235,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         import omni.log
         omni.log.info(f"Prim: {prim}")
         omni.log.info(f"Is valid: {prim.IsValid()}")
-        #self.draw = _debug_draw.acquire_debug_draw_interface()
         try:
             self.REB = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
             self.PHI_Deg = torch.tensor(30, device=self.device, dtype=torch.float32)  # degrees
@@ -395,14 +335,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             for j in range(len(self.start_positions[0])):
                 self.start_poses[i, j, :3] = torch.tensor(self.start_positions[i][j], device='cuda:0', dtype=torch.float32)
                 self.start_poses[i, j, 3:] = torch.tensor(self.start_quaternions[i][j], device='cuda:0', dtype=torch.float32)
-        # for i in range(self.num_envs):
-        #     print(f"Env {i}: unique poses = {len(set(tuple(p.tolist()) for p in self.start_poses[i]))}")
-        # for i in range(1):  # check env 0
-        #     for j in range(10):  # assuming 10 poses
-        #         print(f"start_poses[{i}, {j}] = {self.start_poses[i, j]}")
 
-        # add an offset to the start positions (tensor) so that its close to the skull
-        
         if not self.cfg.viewer.headless:
             for env_id in range(self.num_envs):
                 self.draw_points(self.start_positions_tensor[env_id, 0], color=(1.0, 0.0, 0.0, 1.0), size=5.0)
@@ -425,7 +358,6 @@ class BiopsyDirectEnv(DirectRLEnv):
                 start_quat = torch.tensor(self.start_quaternions[env_id][0], device=self.device, dtype=torch.float32)  # Tensor [4]
                 root_state[env_id, :3] = start_pose
                 root_state[env_id, 3:7] = start_quat
-                # print(f"Env {env_id} → Pose: {start_pose.cpu().numpy()}, Quat: {start_quat.cpu().numpy()}")
             except Exception as e:
                 print(f"[ERROR] Failed to set needle for env {env_id}: {e}")
 
@@ -434,16 +366,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         print("Write successful for all environments.")
 
         # Sensors
-        self.raycast_cam_tumor = self.scene["raycast_camera_tumor"]
-        self.raycast_cam_vessel = self.scene["raycast_camera_vessel"]
         self.raycast_vessel = self.scene["raycast_vessel"]
-        self.raycast_tumor = self.scene["raycast_tumor"]
-        self.raycast_cam_vessel_max_distance = 0.001
-        if not self.cfg.viewer.headless and self.cfg.viewer.save:
-            import omni.replicator.core as rep
-            datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = f"/home/sanjay/thesis_replications/forked/IsaacLab/custom/raycaster_output/{datetime_str}/{str(self.raycast_cam_vessel_max_distance)}"
-            self.rep_writer = rep.BasicWriter(output_dir=output_dir, frame_padding=3)
 
         # Brain Shift 
         self.brain_shift_data = []
@@ -493,6 +416,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.danger_bins = torch.zeros((self.num_envs, 16), dtype=torch.float32, device=self.device)  # Danger bins for the raycaster
 
         # Rewards
+        self.previous_twist_action = torch.zeros((self.num_envs, 1), dtype=torch.float32, device=self.device)  # Previous twist action
         self.potentials = torch.zeros(self.num_envs, dtype=torch.float32, device=self.sim.device)
         self.prev_potentials = torch.zeros_like(self.potentials)
         self.d_ttip_tumor = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)  # Distance from tooltip to tumor
@@ -529,50 +453,19 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.actions = actions.clone()
         #print("New action update received at", self.common_step_counter) 
         if isinstance(self.single_action_space, gym.spaces.Box):
-            low = torch.tensor(self.single_action_space.low, device=self.device)
-            high = torch.tensor(self.single_action_space.high, device=self.device)
-            # print(f"Picked actions: {self.actions}")
-            # Scale action values to the range of the action space from [-1, 1] to [low, high] using the formula:
-            # scaled_action = ((x-a)/(b-a)) * (d-c) + c where x belongs to [a, b] and scaled_action belongs to [c, d]
-            # Here, a = -1, b = 1, c = low, d = high
-            a, b = -1, 1  # Action space range
-            # This scales the actions to the range [low, high]
-            self.actions = (((self.actions - a) / (b - a)) * (high - low)) + low  # Normalize actions to [-1, 1]
-            self.new_actions = 0.5 * (self.actions + 1.0) * (high - low) + low
-            # self.actions = torch.clamp(self.actions, low, high)
-            print(f"Scaled actions: {self.actions}, {self.new_actions}")
+            raise NotImplementedError("Continuous action space not implemented yet.")
         elif isinstance(self.single_action_space, gym.spaces.Discrete):
             # print(f"Picked actions (Discrete): {self.actions}")
-            # For discrete actions, we assume the action is an index into a lookup table
             insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device, dtype=torch.float32)  # Default depth
-            twist_angles_deg = self.actions.float() * 22.5  # 0.0 degrees for no twist
+            twist_angles_deg = self.actions.float() * 22.5 # 0.0 degrees for no twist
             twist_angles_rad = torch.deg2rad(twist_angles_deg)
             # print(f"Insertion depths: {insertion_depths}")
             # print(f"Twist angles (deg): {twist_angles_rad}")
             self.actions = torch.stack([insertion_depths.view(-1), twist_angles_rad.view(-1)], dim=1)
-
-            # print(f"Updated actions: {self.actions}")
         elif isinstance(self.single_action_space, gym.spaces.MultiDiscrete):
-            # print(f"Picked actions (MultiDiscrete): {self.actions}")
-            insertion_bins = self.actions[:, 0]
-            twist_bins = self.actions[:, 1]
-
-            insertion_depths = torch.tensor(
-                [self.insertion_lookup_table[i.item()] for i in insertion_bins],
-                device=self.device,
-                dtype=torch.float32
-            )
-            #insertion_depths = torch.full((self.num_envs,), self.INSERTION_DEPTH.item(), device=self.device, dtype=torch.float32)  # Default depth
-            twist_angles_deg = twist_bins.float() * 22.5  # 0.0 degrees for no twist
-            twist_angles_rad = torch.deg2rad(twist_angles_deg)
-            # print(f"Insertion depths: {insertion_depths}")
-            print(f"Twist angles (deg): {twist_angles_deg}")
-            print(f"Twist angles (rad): {twist_angles_rad}")
-            self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)
-            # print(f"Updated actions: {self.actions}")
+            raise NotImplementedError("Continuous action space not implemented yet.")
 
     def _apply_action(self):
-        # print(f"[DEBUG-STEP] Apply action called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         root_state = self._needle.data.root_state_w.clone()  
         new_root_state = root_state.clone()
         pos = root_state[:, :3]              
@@ -590,17 +483,6 @@ class BiopsyDirectEnv(DirectRLEnv):
             # direction vector (start → tumor)
             preop_direction = self.tumor_centroids_tensor[i] - start_pose[i]
             preop_direction = preop_direction / torch.norm(preop_direction)
-
-            # next_pose = self.generate_needle_step_with_rebound(
-            #     current_pose=current_pose[i],
-            #     insertion_depth=insertion_depths[i],
-            #     twist_angle_rad=twist_angles[i],
-            #     prior_path=prior_path,
-            # )
-            # Compute next pose
-            # print("Calling for next pose", self.common_step_counter)
-            # print("PREOP DIRECTION---------", preop_direction)
-            # print("EULER ANGLE ----------", euler_xyz_from_quat(quat))
             next_pose = self.generate_needle_step_ludwig(
                 current_pose=current_pose[i],
                 insertion_depth=insertion_depths[i],
@@ -614,8 +496,35 @@ class BiopsyDirectEnv(DirectRLEnv):
         new_pos = next_poses[:, :3, 3]
         new_rot = next_poses[:, :3, :3]
         new_quat = quat_from_matrix(new_rot)
-        #new_quat = torch.stack([new_quat[:, 3], new_quat[:, 0], new_quat[:, 1], new_quat[:, 2]], dim=-1)
 
+        # Print needle, raycast camera and raycast sensor pose in world frame
+        # print("-------------------------------------------------------------------------------------------------------------------------")
+        # self.scene.update(dt=self.dt)
+        # print(f"Needle Root Pose : {new_root_state[:, :3].cpu().numpy()}, {new_root_state[:, 3:7].cpu().numpy()}")
+        # raycast_camera_position, raycast_camera_orientation = self.raycast_cam_vessel.data.pos_w, self.raycast_cam_vessel.data.quat_w_world
+        # print(f"Raycast Camera Pose : {raycast_camera_position.cpu().numpy()} and {raycast_camera_orientation.cpu().numpy()}")
+        # raycast_sensor_position, raycast_sensor_orientation = self.raycast_vessel.data.pos_w, self.raycast_vessel.data.quat_w
+        # print(f"Raycast Sensor Pose : {raycast_sensor_position.cpu().numpy()} and {raycast_sensor_orientation.cpu().numpy()}")
+        # camera_position, camera_orientation = self.endo_cam.data.pos_w, self.endo_cam.data.quat_w_world 
+        # print(f"Endo Camera Pose : {camera_position.cpu().numpy()} and {camera_orientation.cpu().numpy()}")
+        # def normalize(q):
+        #     return q / torch.norm(q)
+        # q1 = normalize(raycast_camera_orientation.flatten())
+        # q2 = normalize(new_root_state[:, 3:7].flatten())
+        # q3 = normalize(raycast_sensor_orientation.flatten())
+        # #q4 = normalize(camera_orientation.flatten())
+        # print(f"Raycast Camera Sensor {torch.abs(torch.dot(q1, q2))}")
+        # print(f"Raycast Sensor {torch.abs(torch.dot(q1, q3))}")
+        # #print(f"Endo Camera {torch.abs(torch.dot(q1, q4))}")
+        # self.raycast_cam_marker.visualize(raycast_camera_position, raycast_camera_orientation)
+        # self.raycast_vessel_marker.visualize(raycast_sensor_position, raycast_sensor_orientation)
+        self.needle_marker.visualize(new_pos, new_quat)
+        # transforms = self.raycast_cam_vessel._view.get_transforms()
+        # pos_w, quat_w = transforms[:, :3], transforms[:, 3:]
+        # print("Camera parent position:", pos_w)
+        # print("Camera parent orientation (quat):", quat_w)
+        # print("-------------------------------------------------------------------------------------------------------------------------")
+        
         new_root_state[:, :3] = new_pos
         new_root_state[:, 3:7] = new_quat
         self._needle.write_root_pose_to_sim(new_root_state[:, :7])
@@ -640,7 +549,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         Compute intermediate values for the environment. This includes computing the action to be applied to the robot
         and the observations to be returned to the agent.
         """
-        #self.potentials[env_ids], self.prev_potentials[env_ids] = self.compute_intermediate_values(self.tooltip_pos, self.shuffled_tumor_centroids[env_ids], self.prev_potentials[env_ids])
         pass
     
     def reset_start_positions(self, env_ids):
@@ -660,8 +568,6 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.tooltip_pos[env_id] = pos
             self.tooltip_rot[env_id] = quat
 
-            # print(f"[RESET] Env {env_id} start → Pose: {pos.cpu().numpy()}, Quat: {quat.cpu().numpy()}")
-
         self._needle.write_root_pose_to_sim(root_state[:, :7])
         self._needle.reset()
 
@@ -673,9 +579,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         c) TODO: Reset also brain shift data if needed.
         d) Reset the tumor poses using sample_uniform to add a small random offset.
         """
-        # print(f"[DEBUG-STEP] Reset called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         super()._reset_idx(env_ids)
-        # Recompute any intermediate buffers (like tooltip pos, etc.)
         self.active_path_index[env_ids] = torch.randint(
             high=10,
             size=(len(env_ids),),
@@ -736,6 +640,11 @@ class BiopsyDirectEnv(DirectRLEnv):
             "success": success,
             "truncated": truncated
         })
+        print(f"[DEBUG-STEP] Success: {success}, Truncated: {truncated}, Timeout: {time_out}")
+        if self.num_envs == 1 and self.ui_instance is not None:
+            if success:
+                self.success_counter += 1
+                self.update_reset_ui(self.success_counter)
         return success, truncated
 
 
@@ -750,7 +659,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         - Heading components (t, y, z)
         - Previous Action (twist angle)
         """
-        # Compute straight-line progress and geometry (analytic)
         (normalized_progress,
         deviation,
         perpendicular_vector,
@@ -818,16 +726,18 @@ class BiopsyDirectEnv(DirectRLEnv):
             "heading_x": heading_x,                                    # [B,1]
             "heading_y": heading_y,                                    # [B,1]
             "heading_z": heading_z,                                    # [B,1]
-            "danger_bins": self.danger_bins,                        # [B, 16]
+            "danger_bins": danger_bins,                        # [B, 16]
         }
-        # print(f"[DEBUG-STEP] Observations at step {self.common_step_counter}: {obs}")
-        self.boundary_check_vessel()
-        self.distance_to_vessel()
-
+        
         if self.num_envs == 1:
             self.update_obs_ui(obs["heading_x"], obs["heading_y"], obs["heading_z"], obs["signed_delta_x"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor)#, self.danger_bins)
         self.prev_obs_for_reward = {k: v.clone().detach() for k, v in obs.items()}
-        # print(f"Observation at {self.common_step_counter} are {self.prev_obs_for_reward}")
+
+        for k, v in obs.items():
+            if not torch.isfinite(v).all():
+                print(f"[ERROR] Non-finite in obs[{k}]: {v}")
+                raise ValueError("Invalid observation")
+
         return {"policy": obs}
 
     def _get_rewards(self):  # TODO: to get calculated Rewards
@@ -836,7 +746,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         a) RayCaster Camera reward based on distance to image plane and distance to camera
 
         """
-        # print(f"[DEBUG-STEP] Rewards called at time step: {self.common_step_counter}, {self._sim_step_counter}")
         obs = self.prev_obs_for_reward
         progress_t = obs["normalized_depth_t"]             
         progress_t_dt = obs["normalized_depth_t_ndt"]      
@@ -845,9 +754,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         d_ttip_tumor = self.d_ttip_tumor.clone()  # Distance from tooltip to tumor     
         danger_bins = obs["danger_bins"]         
         total_reward = self.compute_reward(progress_t, progress_t_dt, deviation_t, action, d_ttip_tumor, danger_bins)
-        if self.order_checker:
-            self.order_checker+=1
-            print(f"[ORDER DEBUG]Order at Rewards step: {self.order_checker}")
         return total_reward
 
     def _get_states(self):  # TODO: States for Asymmetric RL
@@ -869,8 +775,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         a = action if action.dim() == 1 else action.squeeze(-1)
         d_mm = deviation_t.squeeze(-1) * 1000.0  
         reward_deviation_new = torch.exp(-0.2 * d_mm)    
-        reward_deviation_new = torch.where(d_mm > 20.0, -5.0, reward_deviation_new) 
-        #print(f"Reward deviation old {reward_deviation} vs Reward deviation new {reward_deviation_new}")
+        reward_deviation_new = torch.where(d_mm > 10.0, -5.0, reward_deviation_new) 
         a_deg = torch.rad2deg(a) % 360.0                   
         offset = 11.25
         a_bin = torch.div((a_deg - offset + 360.0) % 360.0, 22.5, rounding_mode="floor").long()
@@ -883,7 +788,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         reward_collision = torch.zeros_like(danger_a)
         reward_collision = torch.where(danger_a == 1.0, -50.0, reward_collision)
-        reward_collision = torch.where(danger_a == 0.5, -25.0, reward_collision)
+        reward_collision = torch.where((danger_a >= 0.5) & (danger_a < 1.0), -25.0, reward_collision)
         reward_collision = torch.where(danger_a == 0.0, +0.0, reward_collision)
 
         if self.previous_twist_action is not None:
@@ -928,6 +833,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         })
 
         self.previous_twist_action = a_bin.clone().detach()
+        if not torch.isfinite(reward).all():
+            print("[NaN in reward!]", reward)
+            reward = torch.nan_to_num(reward, nan=-10.0, posinf=-10.0, neginf=-10.0)
+
         return reward
 
     # ## --------------------------------------- ## #
@@ -990,9 +899,9 @@ class BiopsyDirectEnv(DirectRLEnv):
                                 filtered_hits: torch.Tensor,
                                 current_pose: torch.Tensor,
                                 n_sectors: int = 16,
-                                radius_m: float = 0.002,     # scan radius in meters
+                                radius_m: float = RCURV,     # scan radius in meters
                                 threshold_cm: float = 0.05,
-                                plot: bool = True): # threshold in cm (e.g. 0.2 cm = 2 mm)
+                                plot: bool = False): # threshold in cm (e.g. 0.2 cm = 2 mm)
         """
         Visualize rays around needle tip, colored by vessel proximity.
 
@@ -1087,6 +996,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             ax.set_xticks(np.linspace(0, 2*np.pi, n_sectors, endpoint=False))
             datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             plt.savefig(f"{SAVE_PATH}/{datetime_str}_env_{env_id}_vessel_danger_map.png", bbox_inches="tight")
+            print(f"[env {env_id}] Saved vessel danger map to {SAVE_PATH}/{datetime_str}_env_{env_id}_vessel_danger_map.png")
             plt.close(fig)
 
         #print(f"[env {env_id}] sector danger: {danger} {danger.shape}")
@@ -1122,13 +1032,6 @@ class BiopsyDirectEnv(DirectRLEnv):
         R[1,1], R[1,2], R[2,1], R[2,2] = c, -s, s, c
         return R
     
-    def _rot_y(self, angle):
-        c = torch.cos(angle); s = torch.sin(angle)
-        R = torch.eye(3, device=self.device, dtype=torch.float32)
-        R[0,0] =  c;  R[0,2] =  s
-        R[2,0] = -s;  R[2,2] =  c
-        return R
-
     def _rot_z(self, phi: torch.Tensor) -> torch.Tensor:
         c = torch.cos(phi); s = torch.sin(phi)
         R = torch.eye(3, device=self.device, dtype=torch.float32)
@@ -1157,13 +1060,12 @@ class BiopsyDirectEnv(DirectRLEnv):
         #
         # roll_delta_rad = 0.0
         s = torch.as_tensor(insertion_depth, device=self.device, dtype=torch.float32)
-        #TODO: Check if kappa should have 1/mm or 1/m as unit, IMPORTANT
-        kappa = torch.as_tensor(400, device=self.device, dtype=torch.float32) # assuming radius of 50mm --> 1/50mm - 20 if in metres
-        roll_angle  = torch.as_tensor(roll_delta_rad, device=self.device, dtype=torch.float32)
+        kappa = torch.as_tensor(KAPPA, device=self.device, dtype=torch.float32) 
+        roll_angle  = torch.as_tensor(roll_delta_rad, device=self.device, dtype=torch.float32) 
         #print("________________________________",roll_angle)
         # bend angle and radius
         theta = kappa * s
-        Rcurv = 1.0 / kappa
+        Rcurv = 1.0 / kappa # 1/400 = 0.0025 m = 2.5 mm 
 
         # exact circular-arc translation in the unrolled frame
         cos_th = torch.cos(theta); 
@@ -1556,7 +1458,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         #     self.draw_lines(top_circle[i], top_circle[(i + 1) % num_points], color="yellow")
         #     self.draw_lines(bottom_circle[i], bottom_circle[(i + 1) % num_points], color="yellow")
 
-    def filter_hits_in_cylinder(self, hits_np, center, axis, radius=0.005, height=0.005):
+    def filter_hits_in_cylinder(self, hits_np, center, axis, radius=RCURV, height=0.005):
         """
         Filters 3D points inside a cylinder centered at `center`, aligned along `axis`.
         """
@@ -1566,37 +1468,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         radial_dists = np.linalg.norm(radial_vecs, axis=1)
         # print(f"Radial distances: {radial_dists, }, Projection lengths: {proj_lengths}")
         # Condition: within radius and within height range
-        mask = (proj_lengths >= -height / 2) & (proj_lengths <= height / 2) & (radial_dists <= radius)
+        mask = (proj_lengths >= 0.0) & (proj_lengths <= height) & (radial_dists <= radius)
         return hits_np[mask]
-    
-    def boundary_check_tumor(self):
-        hits = self.raycast_tumor.data.ray_hits_w
-        for env_id in range(self.num_envs):
-            hits_env = hits[env_id]  # shape (R, 3)
-            valid_mask = torch.isfinite(hits_env).all(dim=-1)  # shape (R,)
-            valid_hits = hits_env[valid_mask]  # shape (V, 3)
-            tool_tip = torch.tensor([[0.0, 0.0, 0.0]])  # Fill with dummy
-            needle_center = tool_tip[env_id].cpu().numpy()
-            # Assuming the tool's orientation provides the correct insertion axis
-            insertion_axis = torch.tensor([[1.0, 0.0, 0.0, 0.0]])  # Fill with dummy
-            insertion_axis_np = insertion_axis[env_id].cpu().numpy()
-            axis = insertion_axis_np[:3]  # (x, y, z)
-            axis = axis / np.linalg.norm(axis)
-            valid_hits_np = valid_hits.cpu().numpy()
-            filtered_hits = self.filter_hits_in_cylinder(
-                hits_np=valid_hits_np,
-                center=needle_center,
-                axis=axis,
-                radius=0.005,
-                height=0.005
-            )
 
-            print(f"[env {env_id}] Hits inside cylinder Tumor: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-            #self.draw_points(filtered_hits, color=(1.0, 0.0, 1.0, 1.0), size=4.0) 
-            if valid_hits_np.shape[0] != 0 and filtered_hits.shape[0] > 0:
-                print("Valid hits shape:", valid_hits_np.shape, filtered_hits.shape)
-                return filtered_hits  # Return filtered hits for further processing or visualization
-            
     def boundary_check_vessel(self):
         # Get all ray hits (num_envs, num_rays, 3)
         hits = self.raycast_vessel.data.ray_hits_w  
@@ -1617,9 +1491,10 @@ class BiopsyDirectEnv(DirectRLEnv):
         sparse_points_all = []
 
         for env_id in range(self.num_envs):
+            # print("checking for env", env_id)
             valid_hits_env = hits[env_id][valid_mask[env_id]]  
             if valid_hits_env.numel() == 0:
-                omni.log.warn(f"[env {env_id}] No valid hits for vessel raycast.")
+                # omni.log.warn(f"[env {env_id}] No valid hits for vessel raycast.")
                 sparse_points_all.append(None)
                 continue
 
@@ -1633,7 +1508,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 hits_np=hits_np,
                 center=center,
                 axis=axis,
-                radius=0.002,
+                radius= RCURV,
                 height=0.003,
             )
             if not self.cfg.viewer.headless and filtered_hits is not None:
@@ -1642,7 +1517,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                     start = self.tool_tip_pos[env_id] 
                     end = filtered_hits           
                     start_batch = start.repeat(end.shape[0], 1)  
-                    self.draw_lines(start_batch, end, color="red")
+                    #self.draw_lines(start_batch, end, color="red")
 
                 except Exception as e:
                     print(f"Error drawing lines: {e}")
@@ -1656,118 +1531,6 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.danger_bins[env_id].copy_(danger_row)
             #print(f"Danger Bins: {self.danger_bins}")
         return self.danger_bins
-
-
-        #     if filtered_hits.shape[0] == 0:
-        #         omni.log.warn(f"[env {env_id}] No valid hits inside cylinder.")
-        #         sparse_points_all.append(None)
-        #         continue
-
-        #     # Prepare point cloud
-        #     self.pcd.points = o3d.utility.Vector3dVector(filtered_hits)
-
-        #     if len(self.pcd.points) < 64:
-        #         points_np = np.asarray(self.pcd.points)
-        #         num_missing = 64 - len(points_np)
-        #         idxs = np.random.choice(len(points_np), num_missing, replace=True)
-        #         noise = np.random.normal(loc=0.0, scale=1e-4, size=(num_missing, 3))
-        #         padded = np.concatenate([points_np, points_np[idxs] + noise], axis=0)
-        #         sparse = torch.tensor(padded, dtype=torch.float32, device=self.device)
-        #     else:
-        #         sparse_pcd = self.pcd.farthest_point_down_sample(64)
-        #         sparse = torch.tensor(np.asarray(sparse_pcd.points), dtype=torch.float32, device=self.device)
-
-        #     sparse_points_all.append(sparse)
-
-        # return sparse_points_all 
-
-    def distance_to_vessel(self):
-        """
-        Compute the mean raycast distance from the tooltip to the vessel for each environment.
-        Returns:
-            torch.Tensor: shape (num_envs, 1), distance in meters.
-        """
-        distances = self.raycast_cam_vessel.data.output.get("distance_to_camera", None)
-
-        if distances is None or distances.shape[0] == 0:
-            omni.log.warn("[distance_to_vessel] Raycast distances not yet populated.")
-            return torch.zeros((self.num_envs, 1), dtype=torch.float32, device=self.device)
-
-        max_dist = self.raycast_cam_vessel_max_distance  # meters
-        B, H, W, _ = distances.shape
-        mean_dists = torch.zeros((B, 1), dtype=torch.float32, device=self.device)
-
-        for env_id in range(B):
-            dists = distances[env_id, :, :, 0]  # (H, W)
-            valid = (~torch.isinf(dists)) & (dists <= max_dist)
-            num_valid = valid.sum().item()
-
-            if num_valid > 0:
-                if self.cfg.viewer.save:
-                    # Extract camera data
-                    camera_index = 0
-                    # note: BasicWriter only supports saving data in numpy format, so we need to convert the data to numpy.
-                    single_cam_data = convert_dict_to_backend(
-                        {k: v[camera_index] for k, v in self.raycast_cam_vessel.data.output.items()}, backend="numpy"
-                    )
-                    # Extract the other information
-                    single_cam_info = self.raycast_cam_vessel.data.info[camera_index]
-
-                    # Pack data back into replicator format to save them using its writer
-                    rep_output = {"annotators": {}}
-                    for key, data, info in zip(single_cam_data.keys(), single_cam_data.values(), single_cam_info.values()):
-                        if info is not None:
-                            rep_output["annotators"][key] = {"render_product": {"data": data, **info}}
-                        else:
-                            rep_output["annotators"][key] = {"render_product": {"data": data}}
-                    # Save images
-                    rep_output["trigger_outputs"] = {"on_time": self.raycast_cam_vessel.frame[camera_index]}
-                    self.rep_writer.write(rep_output)
-                    
-                print(f"[env {env_id}] Valid rays: {num_valid}")
-                raw = dists[valid]
-                print(f"[env {env_id}] Raw distances: {raw.max()}, {raw.min()}, {raw.mean()}")
-                mean = dists[valid].mean()
-                mean_dists[env_id, 0] = mean
-                omni.log.info(f"[env {env_id}] Vessel distance: mean={mean.item():.6f}, valid rays={num_valid}")
-            else:
-                omni.log.warn(f"[env {env_id}] No valid vessel rays within {max_dist * 1000:.1f} mm")
-                mean_dists[env_id, 0] = 100.0
-
-        return mean_dists  # shape: (B, 1)
-
-    def distance_to_tumor(self):
-        """
-        Compute the mean raycast distance from the tooltip to the tumor for each environment.
-        Returns:
-            torch.Tensor: shape (num_envs, 1), distance in meters.
-        """
-        distances = self.raycast_cam_tumor.data.output.get("distance_to_camera", None)
-
-        if distances is None or distances.shape[0] == 0:
-            omni.log.warn("[distance_to_tumor] Raycast distances not yet populated.")
-            return torch.zeros((self.num_envs, 1), dtype=torch.float32, device=self.device)
-
-        max_dist = 0.0005  # meters
-        B, H, W, _ = distances.shape
-        mean_dists = torch.zeros((B, 1), dtype=torch.float32, device=self.device)
-
-        for env_id in range(B):
-            dists = distances[env_id, :, :, 0]  # (H, W)
-            valid = (~torch.isinf(dists)) & (dists <= max_dist)
-            num_valid = valid.sum().item()
-
-            if num_valid > 0:
-                raw = dists[valid]
-                mean = dists[valid].mean()
-                mean_dists[env_id, 0] = mean
-                omni.log.info(f"Raw: {raw}, Mean: {mean}, Valid rays: {num_valid}")
-                # omni.log.info(f"[env {env_id}] Tumor distance: raw: {raw.item()}, mean={mean.item():.5f}, valid rays={num_valid}")
-            else:
-                omni.log.warn(f"[env {env_id}] No valid tumor rays within {max_dist * 1000:.1f} mm")
-                mean_dists[env_id, 0] = 100.0
-
-        return mean_dists  # shape: (B, 1)
 
     def brain_shift(self, points_attr, original_np, env_id):
         new_np = self.brain_shift_data[env_id][0]
@@ -1851,7 +1614,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         return pos, quat
     
     def draw_points(self, points_np, color=(0.2, 0.8, 0.2, 1.0), size=4.0):    
-        if self.common_step_counter % 1000 == 0:
+        if self.common_step_counter % 200 == 0:
             self.draw.clear_points()
         # Convert to numpy if torch
         if isinstance(points_np, torch.Tensor):
@@ -1887,6 +1650,8 @@ class BiopsyDirectEnv(DirectRLEnv):
 
 
     def draw_lines(self, start, end, color):
+        if self.common_step_counter % 200 == 0:
+            self.draw.clear_lines()
         if isinstance(start, torch.Tensor):
             start_pose = start.cpu().numpy()
         else:
