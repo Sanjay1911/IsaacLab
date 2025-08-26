@@ -33,7 +33,10 @@ This readme contains setup instructions, file structures, and training commands 
 
 ## 📁 Important Folders for Training
 
-* **logs/** - Stores the logs for each training session.
+* **logs/** - Stores the logs for each training session. Folder where the logs are saved can be defined in below file under **experiment-->directory**
+    ```bash
+      /home/czlocal/sanjay_isaac/forked/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/direct/biopsy_skrl/agents/skrl_dict_multi_discrete_ppo_cfg.yaml
+    ```
 
 * **source/isaaclab\_tasks/isaaclab\_tasks/direct/biopsy\_skrl/** - Contains the main scripts for training the biopsy task.
 
@@ -53,6 +56,8 @@ git pull
 ---
 
 ## ▶️ Training Commands
+
+IsaacLab has a detailed [documentation for training](https://isaac-sim.github.io/IsaacLab/main/source/overview/reinforcement-learning/index.html#) RL tasks.
 
 Use the following commands to start training:
 
@@ -77,6 +82,10 @@ Use the following commands to start training:
    --video_interval 1500
    ```
 
+* **Task:** Task name is registered with gym and can be found in the below file. 
+    ```bash 
+    /home/czlocal/sanjay_isaac/forked/IsaacLab/source/isaaclab_tasks/isaaclab_tasks/direct/biopsy_skrl/__init__.py
+    ``` 
 * **Command (1):** Trains with visual rendering only (faster).
 * **Command (2):** Trains and stores videos every **1500 steps** with a video length of **750 steps** (configurable).
 
@@ -102,7 +111,7 @@ Use the following commands to start training:
 
 ## How it works? (not for faint hearted people)
 
-# BiopsyDirectEnv – Execution Flow (ASCII Diagram)
+### BiopsyDirectEnv – Execution Flow (ASCII Diagram)
 
 Below is a compact, **markdown + ASCII** flow to show how actions flow through the environment → motion → sensing → observations → rewards → termination.
 
@@ -117,8 +126,7 @@ Below is a compact, **markdown + ASCII** flow to show how actions flow through t
                 ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │     2) STEP: _pre_physics_step(actions from policy/agent)          │
-│  - Decode action → [insertion_depth, roll/twist] (space-aware)     │
-│  - Clamp/scale if Box; bin lookup if MultiDiscrete                 │
+│  - Decode action → [insertion_depth, roll/twist] (space-aware)     │               │
 └───────────────┬────────────────────────────────────────────────────┘
                 │
                 ▼
@@ -132,7 +140,7 @@ Below is a compact, **markdown + ASCII** flow to show how actions flow through t
                 ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │           4) SENSING / GEOMETRY                                    │
-│  - Raycasts sample Vessel surface near needle tip                   │
+│  - Raycasts sample Vessel surface near needle tip                  │
 │  - boundary_check_vessel(): cylinder filter + sector danger bins   │
 │  - calc_normalized_progress(): path progress, deviation, distances │
 └───────────────┬────────────────────────────────────────────────────┘
@@ -140,7 +148,7 @@ Below is a compact, **markdown + ASCII** flow to show how actions flow through t
                 ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │                5) OBS: _get_observations                           │
-│  - Build dict:                                                      │
+│  - Build dict:                                                     │
 │    • current_action (twist)                                        │
 │    • normalized_depth_t, normalized_depth_t_ndt                    │
 │    • deviation_t, deviation_t_ndt                                  │
@@ -182,7 +190,7 @@ Below is a compact, **markdown + ASCII** flow to show how actions flow through t
 * **No collision feedback** → `boundary_check_vessel()` and `visualize_vessel_danger()` (ray hits valid mask, cylinder filter radii/height).
 * **Assets not found** → `MinimalSceneCfg` file paths (`Vessels.usd`, `tumor.obj`) and pickle paths in `__init__`.
 
-## Key I/O at a Glance (2–3 lines each)
+## Key I/O at a Glance 
 
 * **`_pre_physics_step(actions)`**
   **Args:** `actions (B, ·)` from policy (Box/Discrete/MultiDiscrete).
@@ -251,7 +259,7 @@ Some scripts may break if the following files are missing or paths are incorrect
    tumor = AssetBaseCfg(
        prim_path="{ENV_REGEX_NS}/Tumor",
        spawn=sim_utils.MeshFileCfg(
-           file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+           file_path="/home/czlocal/sanjay_isaac/forked/tumor.obj"
        ),
        init_state=AssetBaseCfg.InitialStateCfg(
            pos=(0.0, 0.0, 0.20),
@@ -262,3 +270,4 @@ Some scripts may break if the following files are missing or paths are incorrect
 
 ---
 
+## If you've any further questions about training / logging, please write to me at [Sanjay](sanjayyadav.tamil@gmail.com) or contact [Ludwig Haide](ludwig.haide@zeiss.com)
