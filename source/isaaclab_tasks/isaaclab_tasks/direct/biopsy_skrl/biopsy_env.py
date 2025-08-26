@@ -1468,7 +1468,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         radial_dists = np.linalg.norm(radial_vecs, axis=1)
         # print(f"Radial distances: {radial_dists, }, Projection lengths: {proj_lengths}")
         # Condition: within radius and within height range
-        mask = (proj_lengths >= -height / 2) & (proj_lengths <= height / 2) & (radial_dists <= radius)
+        mask = (proj_lengths >= 0.0) & (proj_lengths <= height) & (radial_dists <= radius)
         return hits_np[mask]
 
     def boundary_check_vessel(self):
