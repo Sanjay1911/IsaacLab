@@ -76,8 +76,8 @@ from isaaclab.markers.config import FRAME_MARKER_CFG
 import open3d as o3d
 import matplotlib.pyplot as plt
 
-SAVE_PATH = "/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/output/plots/2508"
-KAPPA = 400  # 1/m
+SAVE_PATH = "/home/sanjay/thesis_replications/forked/IsaacLab/custom/output/plots/2508"
+KAPPA = 100  # 1/m
 RCURV = 1 / KAPPA  # m
 @torch.jit.script
 def linspace(start: torch.Tensor, stop: torch.Tensor, num: int):
@@ -192,10 +192,10 @@ class BiopsyDirectEnvCfg(DirectRLEnvCfg):
     dof_velocity_scale = 0.1
 
     # reward scales
-    w_progress = 2.0
-    w_deviation = 2.0
+    w_progress = 1.5
+    w_deviation = 0.5
     w_collision = 1.0
-    w_inside_tumor = 20.0
+    w_inside_tumor = 30.0
     w_action = 0.5
 
 
@@ -241,7 +241,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.CURV = torch.tensor(0.05, device=self.device, dtype=torch.float32)  # mm
             self.dt_steer = torch.tensor(0.5, device=self.device, dtype=torch.float32)  # seconds
             self.INSERTION_DEPTH = torch.tensor(0.001, device=self.device, dtype=torch.float32)  # mm
-            self.TUMOR_REACH_THRESHOLD = torch.tensor(0.0075, device=self.device, dtype=torch.float32)  # mm
+            self.TUMOR_REACH_THRESHOLD = torch.tensor(0.0050, device=self.device, dtype=torch.float32)  # mm
             self.DIST_THRESHOLD = torch.tensor(0.005, device=self.device, dtype=torch.float32)  # mm
             self.K_DEV = torch.tensor(10000.0, device=self.device, dtype=torch.float32)  # Deviation scaling factor
         except Exception as e:
@@ -286,7 +286,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         start_positions_np = np.array(self.start_positions)         # [N, 10, 3]
         tumor_centroids_np = np.array(self.tumor_centroids)  # [N, 3]
         offsets_np = np.array(self.offsets)                         # [N, 3]
-        offset_to_skull = np.array([0.0, 0.049, 0.0])  # offset by 4.95 cm in y-axis
+        offset_to_skull = np.array([0.0, 0.0595, 0.0])  # offset by 4.95 cm in y-axis
         offsets_expanded = offsets_np[:, None, :]                   # [N, 1, 3]
         start_positions_offset = start_positions_np + offsets_expanded + offset_to_skull  # [N, 10, 3]
         tumor_centroids_offset = tumor_centroids_np + offsets_np  # [N, 3]
@@ -592,6 +592,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)  # Shape: [B, 2]
         self.previous_twist_action[env_ids] = 0.0 
         self.danger_bins = torch.zeros((self.num_envs, 16), dtype=torch.float32, device=self.device) # reset bins to zero after reset as there are no update calls and hence no values
+        self.draw.clear_lines()
+        self.draw.clear_points()
         # # Reset tumor poses using sample_uniform TODO: Uncomment if needed
         # tumor_world_poses = self.tumor.get_world_poses(env_ids)
         # position, quaternion = tumor_world_poses
@@ -698,6 +700,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         heading_z = heading_vec_needle_frame[:, 2]
         danger_bins = self.boundary_check_vessel()
         self.extras.update({
+            "start_positions": self.start_positions_tensor.clone().detach(),  # [B, 10, 3]
+            "start_quaternions": self.start_quaternions_tensor.clone().detach(),  #
+            "tumor_centroids": self.tumor_centroids_tensor.clone().detach(),    # [B, 3]
             "env_ids": self.env_ids.clone().detach(),                              # [B]
             "active_path_index": self.active_path_index.clone().detach(),          # [B]
             "normalized_progress_t": normalized_progress.clone().detach(),         # [B]
@@ -789,7 +794,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         reward_collision = torch.zeros_like(danger_a)
         reward_collision = torch.where(danger_a == 1.0, -50.0, reward_collision)
         reward_collision = torch.where((danger_a >= 0.5) & (danger_a < 1.0), -25.0, reward_collision)
-        reward_collision = torch.where(danger_a == 0.0, +0.0, reward_collision)
+        reward_collision = torch.where(danger_a == 0.0, +1.0, reward_collision)
 
         if self.previous_twist_action is not None:
             reward_action = torch.abs(a_bin - self.previous_twist_action.long()) / 16.0
@@ -820,8 +825,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         print(f"Final reward         : {reward.detach().cpu().numpy()}")
         print("====================\n")
 
-        if reward_collision.item() == -50.0:
-            time.sleep(1)
+        # if reward_collision.item() == -50.0:
+        #     time.sleep(1)
         # -------------------
         # Update buffers
         # -------------------
@@ -1508,7 +1513,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 hits_np=hits_np,
                 center=center,
                 axis=axis,
-                radius= RCURV,
+                radius=0.01,
                 height=0.003,
             )
             if not self.cfg.viewer.headless and filtered_hits is not None:
