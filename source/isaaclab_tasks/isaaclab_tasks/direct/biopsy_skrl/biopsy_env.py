@@ -121,8 +121,8 @@ class MinimalSceneCfg(InteractiveSceneCfg):
 
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/sanjay/thesis_replications/vessels.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -130,9 +130,9 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0633, 0.03706, 0.19919), rot=(0.70710, 0.70710, 0.0, 0.0)), # 0.0633, 0.03706, 0.19463
     )
 
     needle = RigidObjectCfg(
@@ -214,18 +214,19 @@ class BiopsyDirectEnv(DirectRLEnv):
 
     def __init__(self, cfg: BiopsyDirectEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
-        
+        self.ui_instance = None
         if not self.cfg.viewer.headless:
             import omni.log
             omni.log.warn("Running in headless mode. No rendering will be performed.")
             from isaacsim.util.debug_draw import _debug_draw
             self.draw = _debug_draw.acquire_debug_draw_interface()
-            try:
-                import isaacsim.examples.ui.extension as custom_ui
-                self.ui_instance = custom_ui.EXTENSION_INSTANCE
-                print("Custom UI extension imported successfully (post)")
-            except Exception as e:
-                print(f"Error importing omni.kit.app: {e}")
+            
+            # try:
+            #     import isaacsim.examples.ui.extension as custom_ui
+            #     self.ui_instance = custom_ui.EXTENSION_INSTANCE
+            #     print("Custom UI extension imported successfully (post)")
+            # except Exception as e:
+            #     print(f"Error importing omni.kit.app: {e}")
 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
         self.cloner = GridCloner(spacing=self.cfg.scene.env_spacing)
@@ -258,17 +259,17 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.start_pose = []
         self.start_positions = []
         self.start_quaternions = []
-        self.tumor_pickle = load_pickle("/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/path_comparison/pickle_finale/rl_dataset_100envs.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
+        self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_1_visual.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
         for i in range(min(self.num_envs, len(self.tumor_pickle))):
             omni.log.info(f"Loading tumor data for env: {i}")
             try:
                 env_data = self.tumor_pickle[i]
-                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "scored_paths", "top_entry_points", "start_pose"]:
+                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
                     assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
                 self.tumor_positions.append(env_data["tumor_position"])
                 self.tumor_quaternions.append(env_data["tumor_quat"])
                 self.tumor_centroids.append(env_data["tumor_centroid"])
-                self.scored_paths.append(env_data["scored_paths"])
+                self.scored_paths.append(env_data["entry_points"])
                 self.tumor_top_entry_points.append(env_data["top_entry_points"])
                 self.start_pose.append(env_data["start_pose"])
                 self.start_positions.append([pose["position"] for pose in env_data["start_pose"]])
@@ -370,7 +371,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         # Brain Shift 
         self.brain_shift_data = []
-        shift_data = load_pickle("/home/czlocal/sanjay_isaac/forked/IsaacLab/custom/path_comparison/path_comparison/precomputed_brain_deformations100envs.pkl")
+        shift_data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom/path_comparison/path_comparison/pickle_finale/precomputed_brain_deformations_10envs.pkl")
         # print(f"[INFO] Loaded brain shift data for {len(shift_data)} envs")
         for env_id in range(self.scene.num_envs):
             try:
@@ -395,7 +396,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         self.stage = stage_utils.get_current_stage()
         self.env_ids = torch.arange(self.num_envs, device=self.device)
-        self.set_tumor_positions()
+        #self.set_tumor_positions()
 
         # Markers
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -592,8 +593,8 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.actions = torch.stack([insertion_depths, twist_angles_rad], dim=1)  # Shape: [B, 2]
         self.previous_twist_action[env_ids] = 0.0 
         self.danger_bins = torch.zeros((self.num_envs, 16), dtype=torch.float32, device=self.device) # reset bins to zero after reset as there are no update calls and hence no values
-        self.draw.clear_lines()
-        self.draw.clear_points()
+        #self.draw.clear_lines()
+        #self.draw.clear_points()
         # # Reset tumor poses using sample_uniform TODO: Uncomment if needed
         # tumor_world_poses = self.tumor.get_world_poses(env_ids)
         # position, quaternion = tumor_world_poses
@@ -862,7 +863,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         signed_delta_z,   # Signed ΔZ
         deviation_t,      # Lateral deviation
         d_ttip_tumor,     # Distance tip→tumor
-        danger_bins       # Danger bins
+        #danger_bins       # Danger bins
     ):
         #print(f"[DEBUG]: {heading_t}, {heading_y}, {heading_z}, {signed_delta_y}, {signed_delta_z}, {deviation_t}, {d_ttip_tumor}")
         # helper: tensor/ndarray/python -> clean float 
@@ -871,40 +872,43 @@ class BiopsyDirectEnv(DirectRLEnv):
                 return float(getattr(x, "squeeze", lambda: x)())
             except Exception:
                 return float(x)
-        self.ui_instance._models["step"].set_value(self.common_step_counter)
-        # value per plot (in the same order you created them)
-        values = [
-            ("_plot_data",   "timeseries_plot",   "timeseries_plot_val",   _f(heading_x)),
-            ("_plot_data_1", "timeseries_plot_1", "timeseries_plot_val_1", _f(heading_y)),
-            ("_plot_data_2", "timeseries_plot_2", "timeseries_plot_val_2", _f(heading_z)),
-            ("_plot_data_3", "timeseries_plot_3", "timeseries_plot_val_3", _f(signed_delta_x)),
-            ("_plot_data_4", "timeseries_plot_4", "timeseries_plot_val_4", _f(signed_delta_z)),
-            ("_plot_data_5", "timeseries_plot_5", "timeseries_plot_val_5", _f(deviation_t)),
-            ("_plot_data_6", "timeseries_plot_6", "timeseries_plot_val_6", _f(d_ttip_tumor)),
-        ]
+        if self.ui_instance is None:
+            return
+        else:
+            self.ui_instance._models["step"].set_value(self.common_step_counter)
+            # value per plot (in the same order you created them)
+            values = [
+                ("_plot_data",   "timeseries_plot",   "timeseries_plot_val",   _f(heading_x)),
+                ("_plot_data_1", "timeseries_plot_1", "timeseries_plot_val_1", _f(heading_y)),
+                ("_plot_data_2", "timeseries_plot_2", "timeseries_plot_val_2", _f(heading_z)),
+                ("_plot_data_3", "timeseries_plot_3", "timeseries_plot_val_3", _f(signed_delta_x)),
+                ("_plot_data_4", "timeseries_plot_4", "timeseries_plot_val_4", _f(signed_delta_z)),
+                ("_plot_data_5", "timeseries_plot_5", "timeseries_plot_val_5", _f(deviation_t)),
+                ("_plot_data_6", "timeseries_plot_6", "timeseries_plot_val_6", _f(d_ttip_tumor)),
+            ]
 
-        # push each value and refresh its plot
-        for buf_attr, plot_key, val_key, v in values:
-            buf = getattr(self.ui_instance, buf_attr, None)
-            if buf is None:
-                buf = [0.0] * 360
-                setattr(self.ui_instance, buf_attr, buf)
-            buf.append(v)
-            if len(buf) > 360:
-                buf.pop(0)
+            # push each value and refresh its plot
+            for buf_attr, plot_key, val_key, v in values:
+                buf = getattr(self.ui_instance, buf_attr, None)
+                if buf is None:
+                    buf = [0.0] * 360
+                    setattr(self.ui_instance, buf_attr, buf)
+                buf.append(v)
+                if len(buf) > 360:
+                    buf.pop(0)
 
-            plot = self.ui_instance._models.get(plot_key)
-            val_model = self.ui_instance._models.get(val_key)
-            if plot is not None:
-                plot.set_data(*buf)          
-            if val_model is not None:
-                val_model.set_value(v)
+                plot = self.ui_instance._models.get(plot_key)
+                val_model = self.ui_instance._models.get(val_key)
+                if plot is not None:
+                    plot.set_data(*buf)          
+                if val_model is not None:
+                    val_model.set_value(v)
 
     def visualize_vessel_danger(self, env_id: int,
                                 filtered_hits: torch.Tensor,
                                 current_pose: torch.Tensor,
                                 n_sectors: int = 16,
-                                radius_m: float = RCURV,     # scan radius in meters
+                                radius_m: float = 0.005,     # 5 mm
                                 threshold_cm: float = 0.05,
                                 plot: bool = False): # threshold in cm (e.g. 0.2 cm = 2 mm)
         """
@@ -968,13 +972,16 @@ class BiopsyDirectEnv(DirectRLEnv):
             idx = closest_idx[b]
             if idx >= 0:
                 end_world = hits_world[idx]
-                if danger[b] == 1.0:
+                if danger[b] == 1.0 and not self.cfg.viewer.headless:
                     col = "red"
-                elif danger[b] > 0.5:
-                    col = "yellow"
-                else:
-                    col = "green"
-                self.draw_lines(tip, end_world, color=col)
+                    self.draw_lines(tip, end_world, color=col)
+                    
+                # elif danger[b] > 0.5:
+                #     col = "yellow"
+                # else:
+                #     col = "green"
+                # if not self.cfg.viewer.headless:
+                #     self.draw_lines(tip, end_world, color=col)
 
             # --- Matplotlib polar plot ---
         if plot is True:
@@ -1455,8 +1462,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.draw_points(bottom_circle, color=(1.0, 0.0, 0.0, 1.0), size=4.0)  # Red color for the bottom circle
 
         # Draw lines connecting corresponding points from the top and bottom circles
-        for top, bottom in zip(top_circle, bottom_circle):
-            self.draw_lines(top, bottom, color="yellow")  # Yellow lines for the sides of the cylinder
+        if not self.cfg.viewer.headless:
+            for top, bottom in zip(top_circle, bottom_circle):
+                self.draw_lines(top, bottom, color="yellow")  # Yellow lines for the sides of the cylinder
 
         # # Optionally, connect the points on the top and bottom circles to visualize the circumference
         # for i in range(num_points):
