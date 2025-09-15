@@ -117,8 +117,15 @@ def main():
     def save_trajectories():
         # finalize partial episodes
         for eid, rec in list(buffers.items()):
-            if len(rec["steps"]) > 0:
-                completed.append({"env_id": eid, "path_idx": rec["path_idx"], "steps": rec["steps"]})
+            if len(rec.get("steps", [])) > 0:
+                completed.append({
+                    "env_id": eid,
+                    "path_idx": rec.get("path_idx", -1),
+                    "steps": rec["steps"],
+                    "success": False,  # partial; not terminal
+                    "collision": bool(rec.get("had_collision", False)),
+                    "collision_steps": int(rec.get("collision_steps", 0)),
+                })
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_path = "/home/sanjay/thesis_replications/forked/IsaacLab/logs/skrl/Isaac-Biopsy-Direct-Dict-MultiDiscrete-v0/2025-08-08_17-13-56_ppo_torch/metrics"
         if os.path.isdir(out_path) or out_path.endswith(os.sep):
@@ -162,27 +169,39 @@ def main():
         path_idx = info["active_path_index"]  
         success = info.get("success", torch.zeros_like(env_ids, dtype=torch.bool))
         truncated = info.get("truncated", torch.zeros_like(env_ids, dtype=torch.bool))
-    
+        reward_collision = info.get("reward_collision", torch.zeros_like(env_ids, dtype=torch.float32))
+
         env_ids_np = to_cpu_np(env_ids).astype(np.int64)
         path_idx_np = to_cpu_np(path_idx).astype(np.int64)
         succ_np = to_cpu_np(success).astype(bool)
         trunc_np = to_cpu_np(truncated).astype(bool)
+        coll_np = to_cpu_np(reward_collision).astype(float)
 
         B = env_ids_np.shape[0]
         for i in range(B):
             eid = int(env_ids_np[i])
             pid = int(path_idx_np[i])
 
+            # If this env switches to a new path while an episode is open, close the old one first
             if (eid not in buffers) or (buffers[eid]["path_idx"] != pid and len(buffers[eid]["steps"]) > 0):
                 prev = buffers.get(eid)
                 if prev and len(prev["steps"]) > 0:
-                    completed.append({"env_id": eid, "path_idx": prev["path_idx"], "steps": prev["steps"]})
-                buffers[eid] = {"path_idx": pid, "steps": []}
+                    completed.append({
+                        "env_id": eid,
+                        "path_idx": prev["path_idx"],
+                        "steps": prev["steps"],
+                        "success": False,  # mid-switch, treat as non-terminal
+                        "collision": bool(prev.get("had_collision", False)),
+                        "collision_steps": int(prev.get("collision_steps", 0)),
+                    })
+                # start a new buffer for this (env, path)
+                buffers[eid] = {"path_idx": pid, "steps": [], "had_collision": False, "collision_steps": 0}
 
+            # Ensure buffer exists and has the tracking fields
             if eid not in buffers:
-                buffers[eid] = {"path_idx": pid, "steps": []}
+                buffers[eid] = {"path_idx": pid, "steps": [], "had_collision": False, "collision_steps": 0}
 
-            # build per-step snapshot for this env row
+            # Build per-step snapshot for this env row
             snap = {"t": step_counter}
             for k, v in info.items():
                 if isinstance(v, torch.Tensor):
@@ -196,9 +215,27 @@ def main():
                     snap[k] = v
             buffers[eid]["steps"].append(snap)
 
-            if succ_np[i]:
-                completed.append({"env_id": eid, "path_idx": buffers[eid]["path_idx"], "steps": buffers[eid]["steps"]})
-                buffers[eid] = {"path_idx": pid, "steps": []}  # clear; next episode will start fresh
+            # --- collision accumulation across the episode ---
+            # Treat any step with reward_collision == -50 as a direct hit
+            if coll_np[i] <= -49.5:  # tolerance for fp
+                buffers[eid]["had_collision"] = True
+                buffers[eid]["collision_steps"] += 1
+
+            print(f" Env {eid} Path {pid} Step {step_counter} | reward_collision={coll_np[i]:.1f}")
+
+            # --- on terminal (success or truncated), finalize this episode ---
+            if succ_np[i] or trunc_np[i]:
+                completed.append({
+                    "env_id": eid,
+                    "path_idx": buffers[eid]["path_idx"],
+                    "steps": buffers[eid]["steps"],
+                    "success": bool(succ_np[i]),
+                    "collision": bool(buffers[eid]["had_collision"]),
+                    "collision_steps": int(buffers[eid]["collision_steps"]),
+                })
+                # clear for next episode on this env (path may or may not change)
+                buffers[eid] = {"path_idx": pid, "steps": [], "had_collision": False, "collision_steps": 0}
+
 
     # ---- rollout loop ----
     obs, _ = env.reset()
@@ -218,6 +255,8 @@ def main():
             step_counter += 1
 
             #print(f"INFO KEYS: {info.keys()}")
+            
+            #print(f" Success: {info.get('success')} | Truncated: {info.get('truncated')}")
             if args_cli.video and step_counter >= args_cli.video_length:
                 break
 
