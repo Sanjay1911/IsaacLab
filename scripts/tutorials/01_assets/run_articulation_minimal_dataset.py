@@ -102,7 +102,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/vessels.obj"
+            file_path="/home/sanjay/thesis_replications/vessels.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -112,9 +112,8 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.MeshFileCfg(
             file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0633, 0.03706, 0.19182), rot=(0.70710, 0.70710, 0.0, 0.0)), # 0.0633, 0.03706, 0.19463
     )
-
     robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     raycast_camera = RayCasterCameraCfg(
@@ -271,7 +270,7 @@ def get_entry_points(points_world, tumor_center, safety_offset=0.05):
         points_world = points_world.cpu().numpy()
     if isinstance(tumor_center, torch.Tensor):
         tumor_center = tumor_center.cpu().numpy()
-    radius = 0.03   # 3 cm disk
+    radius = 0.05   # 3 cm disk
     height_min = 0.05
     height_max = 0.750
     projection_dir = np.array([0, -1, 0])  
@@ -558,8 +557,10 @@ def main():
     print("Needle orientation (quat):", needle_quat)
     camera = scene["raycast_camera"]
     tumor = scene["tumor"]
-# Sample 100 random tumor poses
-    tumor_positions, tumor_quats = sample_random_tumor_pose(100)
+# Sample 1 random tumor poses
+    tumor_positions, tumor_quats = sample_random_tumor_pose(2)
+    print("Sampled tumor positions:", tumor_positions)
+    print("Sampled tumor quaternions:", tumor_quats)
     dataset = {}
 
     # Precompute static data once (since skull and vessels are fixed)
@@ -571,12 +572,12 @@ def main():
     vessel_vertices = vessel_meshes[0][2]  # Only need for debugging or extensions
 
     # Loop over all tumor poses
-    for i in range(100):
+    for i in range(1):
         # Set tumor pose in sim
-        tumor.set_local_poses(
-            torch.tensor([tumor_positions[i]], dtype=torch.float32),
-            torch.tensor([tumor_quats[i]], dtype=torch.float32),
-        )
+        # tumor.set_local_poses(
+        #     torch.tensor([tumor_positions[i]], dtype=torch.float32),
+        #     torch.tensor([tumor_quats[i]], dtype=torch.float32),
+        # )
         scene.update(sim.get_physics_dt())
 
         # Get tumor centroid (world-space)
@@ -589,7 +590,10 @@ def main():
         except Exception as e:
             print(f"[ERROR] Tumor {i}: Entry point generation failed: {e}")
             continue
-
+        print(f"Tumor {i}: Generated {len(entry_pts)} entry points")
+        if len(entry_pts) == 0:
+            print(f"[SKIP] Tumor {i}: No valid entry points")
+            continue
         # Score entry points
         scored_paths = []
         for ep in entry_pts:
@@ -600,7 +604,7 @@ def main():
                 "ratio": ratio,
             })
 
-        top_paths = sorted(scored_paths, key=lambda x: x["score"])[:10]
+        top_paths = sorted(scored_paths, key=lambda x: x["score"])[:50]
         if len(top_paths) == 0:
             print(f"[SKIP] Tumor {i}: No valid top paths")
             continue
@@ -631,8 +635,9 @@ def main():
 
         print(f"[WRITE] ✅ Tumor #{i:03} | Pos: {tumor_positions[i]}, Quat: {tumor_quats[i]}")
 
+    print(f"Dataset:", dataset)
     # Save dataset
-    dump_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205.pkl", dataset)
+    dump_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_1_visual.pkl", dataset)
     print("✅ Finished saving dataset with 100 tumor entries.")
 
     holder_pos_trch = torch.zeros((num_envs, 3), dtype=torch.float64, device=sim.device)

@@ -16,7 +16,7 @@
 
 
 import argparse
-
+import time
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
@@ -112,15 +112,15 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     skull = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Skull",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/skull.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
 
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/czlocal/sanjay_isaac/forked/Vessels.usd"
+        spawn=sim_utils.MeshFileCfg(
+            file_path="/home/sanjay/thesis_replications/vessels.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -128,9 +128,9 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     tumor = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Tumor",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/czlocal/sanjay_isaac/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
+            file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0633, 0.03706, 0.19919), rot=(0.70710, 0.70710, 0.0, 0.0)), # 0.0633, 0.03706, 0.19463
     )
 
     robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
@@ -676,7 +676,7 @@ def main():
             if "entry_points" in data and len(data["entry_points"]) > 0:
                 draw_points(data["entry_points"], color=(1.0, 0.0, 0.0, 1.0), size=4.0)
             if "tumor_centroid" in data and len(data["tumor_centroid"]) > 0:
-                draw_points([data["tumor_centroid"]], color=(0.0, 0.0, 1.0, 1.0), size=8.0)
+                draw_points([data["tumor_centroid"]], color=(0.0, 0.0, 1.0, 1.0), size=1.0)
 
         for i, data in env_data.items():
             if "entry_points" in data and len(data["entry_points"]) > 0:
@@ -720,22 +720,22 @@ def main():
         tumor_positions = []
         tumor_quaternions = []
         tumor_centroids = []
-        scored_paths = []
+        entry_points = []
         top_entry_points = []    
         start_positions = []
         start_quaternions = []
         # Read Tumor Dataset Pickle and get entry points and start poses
-        data = load_pickle("custom/path_comparison/pickle_finale/rl_dataset_10envs.pkl")    
+        data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_1_visual.pkl")    
         for i in range(min(num_envs, len(data))):
             print(f"[INFO] Loading data for env {i}")
             try:
-                env_data = data[i + 1]
-                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "scored_paths", "top_entry_points", "start_pose"]:
+                env_data = data[i]
+                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
                     assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i+1}"
                 tumor_positions.append(env_data["tumor_position"])
                 tumor_quaternions.append(env_data["tumor_quat"])
                 tumor_centroids.append(env_data["tumor_centroid"])
-                scored_paths.append(env_data["scored_paths"])
+                entry_points.append(env_data["entry_points"])
                 top_entry_points.append(env_data["top_entry_points"])
                 # start_positions.append(env_data["start_pose"]["position"])
                 # start_quaternions.append(env_data["start_pose"]["quaternion"])
@@ -796,11 +796,13 @@ def main():
         except Exception as e:
             print(f"[ERROR] Failed to draw lines: {e}")
 
-        try:
-            start_positions = apply_scene_offsets(start_positions, num_envs)
-            #print("New Start positions:", start_positions)
-        except Exception as e:
-            print(f"[ERROR] ENV {i}: Failed to apply scene offsets: {e}")
+        # try:
+        #     print("Shape of start positions before:", np.array(start_positions).shape)
+        #     start_positions = apply_scene_offsets(start_positions, num_envs)
+        #     #print("New Start positions:", start_positions)
+        # except Exception as e:
+        #     print(f"[ERROR] ENV {i}: Failed to apply scene offsets: {e}")
+        #     pass
 
         # try:
         #     print("-------------------")
@@ -838,14 +840,14 @@ def main():
             print("Tumor Pose Positions before:", poses_pos)
 
             # Apply environment-wise offsets to each tumor position
-            for env_id in range(num_envs):
-                # Add the corresponding offset for this environment to the tumor position
-                offset = offsets[env_id]  # Get the offset for the current environment
-                offset = torch.tensor(offset, dtype=torch.float32)  # Convert to tensor
-                print(f"[INFO] Applying offset {offset} to tumor position for env {env_id}")
-                tumor_positions_tensor[env_id]  # += offset  # Add offset to the tumor position
-                # Set the new positions and quaternions to the tumor
-                tumor.set_local_poses(tumor_positions_tensor, tumor_quaternions_tensor, [env_id])
+            # for env_id in range(num_envs):
+            #     # Add the corresponding offset for this environment to the tumor position
+            #     offset = offsets[env_id]  # Get the offset for the current environment
+            #     offset = torch.tensor(offset, dtype=torch.float32)  # Convert to tensor
+            #     print(f"[INFO] Applying offset {offset} to tumor position for env {env_id}")
+            #     tumor_positions_tensor[env_id]  # += offset  # Add offset to the tumor position
+            #     # Set the new positions and quaternions to the tumor
+            #     tumor.set_local_poses(tumor_positions_tensor, tumor_quaternions_tensor, [env_id])
             
             print("Tumor Pose Positions after:", tumor.get_local_poses())
             print("-------------------")
@@ -898,11 +900,10 @@ def main():
             # Build transform holder → tooltip, then invert
             T_holder_to_tooltip = make_transform(tooltip_offset_pos, tooltip_offset_quat)
             T_tooltip_to_holder = torch.linalg.inv(T_holder_to_tooltip)
-            
             for i in range(num_envs):
                 tooltip_pos = start_positions[i]
                 tooltip_quat = start_quaternions[i]
-                tooltip_pos_world = torch.tensor([tooltip_pos], dtype=torch.float64, device=sim.device)
+                tooltip_pos_world = torch.tensor(tooltip_pos, dtype=torch.float64, device=sim.device)
                 T_world_tooltip = make_transform(tooltip_pos_world, tooltip_quat)
                 closer_distance = 0.009  # 5 mm
                 tooltip_forward_offset = torch.tensor([0.0, -closer_distance, 0.0], dtype=torch.float64)
@@ -992,7 +993,7 @@ def main():
                 continue
             else:
                 pc.points = o3d.utility.Vector3dVector(filtered_hits)
-                down_pc = pc.farthest_point_down_sample(32)
+                down_pc = pc.farthest_point_down_sample(len(filtered_hits)//10)
                 sparse_points = np.asarray(down_pc.points)
                 print(f"[env {env_id}] Sparse points shape: {sparse_points.shape}")
                 draw_points(sparse_points, color=(1.0, 0.0, 1.0, 1.0), size=4.0)  
