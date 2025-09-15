@@ -51,7 +51,7 @@ from isaaclab_rl.skrl import SkrlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
-
+SAVE = False  # whether to save the pickle of trajectories
 SKRL_VERSION = "1.4.2"
 if version.parse(skrl.__version__) < version.parse(SKRL_VERSION):
     skrl.logger.error(f"Unsupported skrl version: {skrl.__version__}. Install supported version using 'pip install skrl>={SKRL_VERSION}'")
@@ -125,8 +125,11 @@ def main():
             out_path = os.path.join(out_path, f"agent_paths_{ts}.pkl")
         print(f"[INFO] Saving {len(completed)} trajectories to: {out_path}")
         try:
-            with open(out_path, "wb") as f:
-                pickle.dump(completed, f)
+            if SAVE:
+                with open(out_path, "wb") as f:
+                    pickle.dump(completed, f)
+            else:
+                print("[WARN] Skipping pickle save; set SAVE=True to enable.")
         except Exception as e:
             print(f"[WARN] Failed to write pickle: {e}")
         try:
@@ -159,7 +162,7 @@ def main():
         path_idx = info["active_path_index"]  
         success = info.get("success", torch.zeros_like(env_ids, dtype=torch.bool))
         truncated = info.get("truncated", torch.zeros_like(env_ids, dtype=torch.bool))
-
+    
         env_ids_np = to_cpu_np(env_ids).astype(np.int64)
         path_idx_np = to_cpu_np(path_idx).astype(np.int64)
         succ_np = to_cpu_np(success).astype(bool)
@@ -193,7 +196,7 @@ def main():
                     snap[k] = v
             buffers[eid]["steps"].append(snap)
 
-            if succ_np[i] or trunc_np[i]:
+            if succ_np[i]:
                 completed.append({"env_id": eid, "path_idx": buffers[eid]["path_idx"], "steps": buffers[eid]["steps"]})
                 buffers[eid] = {"path_idx": pid, "steps": []}  # clear; next episode will start fresh
 
@@ -214,6 +217,7 @@ def main():
             append_step(info)
             step_counter += 1
 
+            #print(f"INFO KEYS: {info.keys()}")
             if args_cli.video and step_counter >= args_cli.video_length:
                 break
 
@@ -223,7 +227,7 @@ def main():
                 if sleep_time > 0:
                     time.sleep(sleep_time)
     finally:
-        passb # atexit 
+        pass  # atexit
 
 if __name__ == "__main__":
     main()
