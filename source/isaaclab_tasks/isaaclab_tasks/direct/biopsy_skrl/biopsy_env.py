@@ -77,7 +77,7 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 
 SAVE_PATH = "/home/sanjay/thesis_replications/forked/IsaacLab/custom/output/plots/2508"
-KAPPA = 100  # 1/m
+KAPPA = 200  # 1/m
 RCURV = 1 / KAPPA  # m
 @torch.jit.script
 def linspace(start: torch.Tensor, stop: torch.Tensor, num: int):
@@ -1513,7 +1513,7 @@ class BiopsyDirectEnv(DirectRLEnv):
                 hits_np=hits_np,
                 center=center,
                 axis=axis,
-                radius=0.01,
+                radius=0.005,   # 5 mm
                 height=0.003,
             )
             if not self.cfg.viewer.headless and filtered_hits is not None:
