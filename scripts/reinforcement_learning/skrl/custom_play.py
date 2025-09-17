@@ -17,6 +17,9 @@ parser.add_argument("--use_pretrained_checkpoint", action="store_true", help="Us
 parser.add_argument("--ml_framework", type=str, default="torch", choices=["torch", "jax", "jax-numpy"], help="The ML framework used for training the skrl agent.")
 parser.add_argument("--algorithm", type=str, default="PPO", choices=["AMP", "PPO", "IPPO", "MAPPO"], help="The RL algorithm used for training the skrl agent.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--max_episodes", type=int, default=100, help="Stop after this many full episodes (success or truncated).")
+parser.add_argument("--save", action="store_true", default=False, help="Save the trajectories to a pickle file at the end of play.")
+
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if args_cli.video:
@@ -51,7 +54,8 @@ from isaaclab_rl.skrl import SkrlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
-SAVE = False  # whether to save the pickle of trajectories
+
+SAVE = args_cli.save  # whether to save the pickle of trajectories
 SKRL_VERSION = "1.4.2"
 if version.parse(skrl.__version__) < version.parse(SKRL_VERSION):
     skrl.logger.error(f"Unsupported skrl version: {skrl.__version__}. Install supported version using 'pip install skrl>={SKRL_VERSION}'")
@@ -113,16 +117,16 @@ def main():
     buffers = {}
     completed = []
     step_counter = 0
+    episode_counter = 0
 
     def save_trajectories():
-        # finalize partial episodes
         for eid, rec in list(buffers.items()):
             if len(rec.get("steps", [])) > 0:
                 completed.append({
                     "env_id": eid,
                     "path_idx": rec.get("path_idx", -1),
                     "steps": rec["steps"],
-                    "success": False,  # partial; not terminal
+                    "success": False,
                     "collision": bool(rec.get("had_collision", False)),
                     "collision_steps": int(rec.get("collision_steps", 0)),
                 })
@@ -160,13 +164,13 @@ def main():
 
     # ---- per-step append helper ----
     def append_step(info):
-        nonlocal buffers, completed, step_counter
+        nonlocal buffers, completed, step_counter, episode_counter
 
         if not isinstance(info, dict) or "env_ids" not in info or "active_path_index" not in info:
             return
 
-        env_ids = info["env_ids"]             
-        path_idx = info["active_path_index"]  
+        env_ids = info["env_ids"]
+        path_idx = info["active_path_index"]
         success = info.get("success", torch.zeros_like(env_ids, dtype=torch.bool))
         truncated = info.get("truncated", torch.zeros_like(env_ids, dtype=torch.bool))
         reward_collision = info.get("reward_collision", torch.zeros_like(env_ids, dtype=torch.float32))
@@ -176,32 +180,14 @@ def main():
         succ_np = to_cpu_np(success).astype(bool)
         trunc_np = to_cpu_np(truncated).astype(bool)
         coll_np = to_cpu_np(reward_collision).astype(float)
-
         B = env_ids_np.shape[0]
         for i in range(B):
             eid = int(env_ids_np[i])
             pid = int(path_idx_np[i])
 
-            # If this env switches to a new path while an episode is open, close the old one first
-            if (eid not in buffers) or (buffers[eid]["path_idx"] != pid and len(buffers[eid]["steps"]) > 0):
-                prev = buffers.get(eid)
-                if prev and len(prev["steps"]) > 0:
-                    completed.append({
-                        "env_id": eid,
-                        "path_idx": prev["path_idx"],
-                        "steps": prev["steps"],
-                        "success": False,  # mid-switch, treat as non-terminal
-                        "collision": bool(prev.get("had_collision", False)),
-                        "collision_steps": int(prev.get("collision_steps", 0)),
-                    })
-                # start a new buffer for this (env, path)
-                buffers[eid] = {"path_idx": pid, "steps": [], "had_collision": False, "collision_steps": 0}
-
-            # Ensure buffer exists and has the tracking fields
             if eid not in buffers:
                 buffers[eid] = {"path_idx": pid, "steps": [], "had_collision": False, "collision_steps": 0}
 
-            # Build per-step snapshot for this env row
             snap = {"t": step_counter}
             for k, v in info.items():
                 if isinstance(v, torch.Tensor):
@@ -210,21 +196,17 @@ def main():
                     elif v.size(0) == B:
                         snap[k] = to_cpu_np(v[i])
                     else:
-                        snap[k] = to_cpu_np(v)  # unusual shape; store as-is
+                        snap[k] = to_cpu_np(v)
                 else:
                     snap[k] = v
             buffers[eid]["steps"].append(snap)
 
-            # --- collision accumulation across the episode ---
-            # Treat any step with reward_collision == -50 as a direct hit
-            if coll_np[i] <= -49.5:  # tolerance for fp
+            if coll_np[i] <= -49.5:
                 buffers[eid]["had_collision"] = True
                 buffers[eid]["collision_steps"] += 1
 
-            print(f" Env {eid} Path {pid} Step {step_counter} | reward_collision={coll_np[i]:.1f}")
-
-            # --- on terminal (success or truncated), finalize this episode ---
             if succ_np[i] or trunc_np[i]:
+                episode_counter += 1
                 completed.append({
                     "env_id": eid,
                     "path_idx": buffers[eid]["path_idx"],
@@ -233,14 +215,19 @@ def main():
                     "collision": bool(buffers[eid]["had_collision"]),
                     "collision_steps": int(buffers[eid]["collision_steps"]),
                 })
-                # clear for next episode on this env (path may or may not change)
+                print(f"[INFO] Episode {episode_counter} finished | "
+                      f"Success={bool(succ_np[i])}, Collision={bool(buffers[eid]['had_collision'])}, "
+                      f"Collision steps={buffers[eid]['collision_steps']}")
                 buffers[eid] = {"path_idx": pid, "steps": [], "had_collision": False, "collision_steps": 0}
-
 
     # ---- rollout loop ----
     obs, _ = env.reset()
     try:
         while simulation_app.is_running():
+            if episode_counter >= args_cli.max_episodes:
+                print(f"[INFO] Reached {episode_counter} episodes. Stopping.")
+                break
+
             t0 = time.time()
             with torch.inference_mode():
                 outputs = runner.agent.act(obs, timestep=0, timesteps=0)
@@ -250,23 +237,26 @@ def main():
                     actions = outputs[-1].get("mean_actions", outputs[0])
                 obs, _, _, _, info = env.step(actions)
 
-            # log
             append_step(info)
             step_counter += 1
 
-            #print(f"INFO KEYS: {info.keys()}")
-            
-            #print(f" Success: {info.get('success')} | Truncated: {info.get('truncated')}")
             if args_cli.video and step_counter >= args_cli.video_length:
                 break
 
-            # real-time pacing
             if args_cli.real_time:
                 sleep_time = dt - (time.time() - t0)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
     finally:
-        pass  # atexit
+        # Summary
+        num_success = sum(1 for t in completed if t["success"])
+        for t in completed:
+            print(f"[INFO] Episode {t['env_id']} finished | "
+                  f"Success={t['success']}")
+        num_trunc = sum(1 for t in completed if not t["success"])
+        print(f"[INFO] Total episodes: {episode_counter}")
+        print(f"[INFO] Success: {num_success} | Truncated: {num_trunc}")
+        pass  # atexit will save trajectories
 
 if __name__ == "__main__":
     main()
