@@ -66,7 +66,7 @@ from isaaclab.utils import configclass, convert_dict_to_backend
 from isaaclab.utils.io import dump_pickle, load_pickle
 
 # Math utilities
-from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, quat_inv, euler_xyz_from_quat, axis_angle_from_quat
+from isaaclab.utils.math import matrix_from_quat, skew_symmetric_matrix, quat_from_matrix, quat_inv, euler_xyz_from_quat, axis_angle_from_quat, sample_uniform
 
 # Visualization and markers
 from isaaclab.markers import VisualizationMarkers
@@ -126,6 +126,9 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.MeshFileCfg(
             file_path="/home/sanjay/thesis_replications/vessels.obj"
         ),
+        # spawn=sim_utils.UsdFileCfg(
+        #     usd_path="assets/Vessels.usd"
+        # ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
 
@@ -134,7 +137,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.MeshFileCfg(
             file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0633, 0.03706, 0.19919), rot=(0.70710, 0.70710, 0.0, 0.0)), # 0.0633, 0.03706, 0.19463
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(-0.03075, 0.03706, 0.17887), rot=(0.70710, 0.70710, 0.0, 0.0)),  # 0.0633, 0.03706, 0.19463 ; -0.03075, 0.03706, 0.19261; -0.03075, 0.03706, 0.19976
     )
 
     needle = RigidObjectCfg(
@@ -300,6 +303,12 @@ class BiopsyDirectEnv(DirectRLEnv):
                 omni.log.warn(f"Exception: {e} for env {i}. Tumor data may be incomplete.")
 
 
+        #  --- collision/path logging buffers (per episode) ---
+        self._ep_tip_xyz = [[] for _ in range(self.num_envs)]  # list of (3,) tip positions per step
+        self._ep_red_tips = [[] for _ in range(self.num_envs)]  # tip positions when red
+        self._ep_step_dmin = [[] for _ in range(self.num_envs)]  # nearest vessel distance per step (m)
+
+
         omni.log.info(f"Start positions count: {len(self.start_positions)}")
         omni.log.info("Tumor data for envs loaded successfully.")
         start_positions_np = np.array(self.start_positions)         # [N, 10, 3]
@@ -362,9 +371,9 @@ class BiopsyDirectEnv(DirectRLEnv):
         assert len(self.tumor_positions) == self.num_envs, f"Number of tumor positions {len(self.tumor_positions)} does not match number of envs {self.num_envs}"
         self.shuffled_tumor_centroids = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
         self.tooltip_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.tooltip_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.tooltip_rot = torch.zeros((self.num_envs, 4), device=self.device)#
         self.tumor = self.scene["tumor"]
-
+        self.vessel = self.scene["vessel"]
         # active path index
         self.active_path_index = torch.zeros((self.num_envs,), dtype=torch.int32, device=self.device)  # [B, 10]
 
@@ -614,20 +623,28 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.danger_bins = torch.zeros((self.num_envs, 16), dtype=torch.float32, device=self.device) # reset bins to zero after reset as there are no update calls and hence no values
         #self.draw.clear_lines()
         #self.draw.clear_points()
+        for b in env_ids:
+            bi = int(b)
+            self._ep_tip_xyz[bi] = []
+            self._ep_red_tips[bi] = []
+            self._ep_step_dmin[bi] = []
+
+        
+        
         # # Reset tumor poses using sample_uniform TODO: Uncomment if needed
         # tumor_world_poses = self.tumor.get_world_poses(env_ids)
         # position, quaternion = tumor_world_poses
         # omni.log.info(f"Initial tumor world poses: {tumor_world_poses}")
         # try:
         #     omni.log.info(f"Resetting tumor poses for env_ids: {env_ids}, Tumor world poses: {tumor_world_poses[0]}")
-        #     sampled_offset = sample_uniform(lower=-0.001, upper=0.001, size=(len(env_ids), 3), device=self.device)
+        #     sampled_offset = sample_uniform(lower=-0.0005, upper=0.0005, size=(len(env_ids), 3), device=self.device)
         #     updated_position = position + sampled_offset
         #     # stack updated poses with quaternions from tumor_world_poses
         #     self.tumor.set_world_poses(positions=updated_position, orientations=quaternion, indices=env_ids)
         #     # print(f"[INFO] Tumor poses reset success for env_ids: {env_ids}")
         # except Exception as e:
         #     omni.log.error(f"Error sampling tumor poses due to: {e}")
-        # omni.log.info(f"Calling _reset_idx for env_ids: {env_ids}")
+        omni.log.info(f"Calling _reset_idx for env_ids: {env_ids}")
         self._compute_intermediate_values(env_ids)
 
     def _get_dones(self):
@@ -658,10 +675,38 @@ class BiopsyDirectEnv(DirectRLEnv):
         overshoot_positive = s_unclamped > (1.0 + s_tol)
         overshoot_negative = s_unclamped < (0.0 - s_tol)
         truncated = (~success) & (time_out | overshoot_positive | overshoot_negative)
+        print(f"[DEBUG] Episode truncated due to timeout: {time_out}, overshoot+: {overshoot_positive}, overshoot-: {overshoot_negative}")
         self.extras.update({
             "success": success,
             "truncated": truncated
         })
+        term_mask = (success | truncated)  # which envs just terminated this step
+        for b in range(self.num_envs):
+            if not bool(term_mask[b]):
+                continue
+
+            # --- curved path: list of tip points (N,3) ---
+            path_pts = np.asarray(self._ep_tip_xyz[b], dtype=np.float32)  # meters
+            if path_pts.size:
+                self.extras[f"path_tip_xyz_env{b}"] = torch.from_numpy(path_pts).to(self.device)
+
+            # --- red events: tip points when collision (M,3) ---
+            red_pts = np.asarray(self._ep_red_tips[b], dtype=np.float32)
+            if red_pts.size:
+                self.extras[f"red_tip_xyz_env{b}"] = torch.from_numpy(red_pts).to(self.device)
+
+            # --- distances: per-step nearest distance (meters) -> d_min, d_avg ---
+            dstep = np.asarray(self._ep_step_dmin[b], dtype=np.float32)
+            finite = np.isfinite(dstep)
+            if finite.any():
+                d_min = float(dstep[finite].min())
+                d_avg = float(dstep[finite].mean())
+            else:
+                d_min, d_avg = float("nan"), float("nan")
+
+            self.extras[f"dmin_env{b}"] = d_min
+            self.extras[f"davg_env{b}"] = d_avg
+
         print(f"[DEBUG-STEP] Success: {success}, Truncated: {truncated}, Timeout: {time_out}")
         if self.num_envs == 1 and self.ui_instance is not None:
             if success:
@@ -753,7 +798,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             "heading_z": heading_z,                                    # [B,1]
             "danger_bins": danger_bins,                        # [B, 16]
         }
-        
+        print(f"Deviation at time t: {deviation}, Deviation considering needle OD: {deviation + 0.001}")
         if self.num_envs == 1:
             self.update_obs_ui(obs["heading_x"], obs["heading_y"], obs["heading_z"], obs["signed_delta_x"], obs["signed_delta_z"], obs["deviation_t"], self.d_ttip_tumor)#, self.danger_bins)
         self.prev_obs_for_reward = {k: v.clone().detach() for k, v in obs.items()}
@@ -944,7 +989,7 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         if filtered_hits is None or filtered_hits.numel() == 0:
             print(f"[env {env_id}] NO FILTERED HITS")
-            return torch.zeros(n_sectors, dtype=torch.float32, device=self.device)
+            return torch.zeros(n_sectors, dtype=torch.float32, device=self.device), torch.full((n_sectors,), float('inf'), dtype=torch.float32, device=self.device)
 
         tip = current_pose[:3, 3].cpu().numpy()   
         R = current_pose[:3, :3].cpu().numpy()    
@@ -1032,8 +1077,8 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         #print(f"[env {env_id}] sector danger: {danger} {danger.shape}")
         danger_tensor = torch.tensor(danger, dtype=torch.float32, device=self.device)
-        return danger_tensor
-
+        r_min_tensor = torch.tensor(r_min, dtype=torch.float32, device=self.device)  # (n_sectors,)
+        return danger_tensor, r_min_tensor
 
     def get_vector_in_needle_frame(self, vector: torch.Tensor, current_pose: torch.Tensor) -> torch.Tensor:
         """
@@ -1437,7 +1482,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         for env_id in self.env_ids:
             env_id = int(env_id)
             offset = torch.tensor(self.offsets[env_id], dtype=torch.float32, device=self.device)
-            tumor_data = self.tumor_pickle[env_id]
+            tumor_data = self.tumor_pickle[env_id + PATH_IDX]
             tumor_pos = torch.tensor(tumor_data["tumor_position"], dtype=torch.float32, device=self.device)
             tumor_quat = torch.tensor(tumor_data["tumor_quat"], dtype=torch.float32, device=self.device)
             tumor_centroid = torch.tensor(tumor_data["tumor_centroid"], dtype=torch.float32, device=self.device)
@@ -1555,13 +1600,31 @@ class BiopsyDirectEnv(DirectRLEnv):
                     print(f"Error drawing lines: {e}")
 
             #print("Calling DANGER visualization")
-            danger_row = self.visualize_vessel_danger(
-            env_id,
-            torch.tensor(filtered_hits, device=self.device, dtype=torch.float32),
-            current_pose[env_id]
-            )                     # shape: (16,)
+            # print("Danger Bins, R_Min: ", self.visualize_vessel_danger(
+            #     env_id,
+            #     torch.tensor(filtered_hits, device=self.device, dtype=torch.float32),
+            #     current_pose[env_id]
+            # ))
+            danger_row, r_min = self.visualize_vessel_danger(
+                env_id,
+                torch.tensor(filtered_hits, device=self.device, dtype=torch.float32),
+                current_pose[env_id]
+            )
             self.danger_bins[env_id].copy_(danger_row)
-            #print(f"Danger Bins: {self.danger_bins}")
+
+            # --- NEW: per-step logging ---
+            tip_w = current_pose[env_id, :3, 3].detach().cpu().numpy()
+            self._ep_tip_xyz[env_id].append(tip_w.astype(np.float32))
+
+            # step nearest distance to any vessel (min over sectors); ignore NaNs / inf if no hits
+            rmin_np = r_min.detach().cpu().numpy()
+            step_dmin = np.nanmin(rmin_np) if np.any(np.isfinite(rmin_np)) else np.nan
+            self._ep_step_dmin[env_id].append(float(step_dmin))
+
+            # if any sector is red, log a red event at the tip position
+            if bool((danger_row == 1.0).any()):
+                self._ep_red_tips[env_id].append(tip_w.astype(np.float32))
+
         return self.danger_bins
 
     def brain_shift(self, points_attr, original_np, env_id):
