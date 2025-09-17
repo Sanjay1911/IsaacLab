@@ -77,8 +77,10 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 
 SAVE_PATH = "/home/sanjay/thesis_replications/forked/IsaacLab/custom/output/plots/2508"
-KAPPA = 200  # 1/m
+KAPPA = 100  # 1/m
 RCURV = 1 / KAPPA  # m
+PATH_IDX = 0
+WESTERLAND = True
 @torch.jit.script
 def linspace(start: torch.Tensor, stop: torch.Tensor, num: int):
     """
@@ -259,21 +261,37 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.start_pose = []
         self.start_positions = []
         self.start_quaternions = []
-        self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_1_visual.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
+        if WESTERLAND:
+            self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_4_visual.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
+        else:
+            self.tumor_pickle = load_pickle("/home/sanjay/Downloads/rl_dataset_100envs.pkl")  #/home/sanjay/Downloads/rl_dataset_100envs.pkl
         for i in range(min(self.num_envs, len(self.tumor_pickle))):
             omni.log.info(f"Loading tumor data for env: {i}")
             try:
-                env_data = self.tumor_pickle[i]
-                for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
-                    assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
-                self.tumor_positions.append(env_data["tumor_position"])
-                self.tumor_quaternions.append(env_data["tumor_quat"])
-                self.tumor_centroids.append(env_data["tumor_centroid"])
-                self.scored_paths.append(env_data["entry_points"])
-                self.tumor_top_entry_points.append(env_data["top_entry_points"])
-                self.start_pose.append(env_data["start_pose"])
-                self.start_positions.append([pose["position"] for pose in env_data["start_pose"]])
-                self.start_quaternions.append([pose["quaternion"] for pose in env_data["start_pose"]])
+                env_data = self.tumor_pickle[i+PATH_IDX]
+                if WESTERLAND:
+                    for key in ["tumor_position", "tumor_quat", "tumor_centroid", "entry_points", "top_entry_points", "start_pose"]:
+                        assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
+                    self.tumor_positions.append(env_data["tumor_position"])
+                    self.tumor_quaternions.append(env_data["tumor_quat"])
+                    self.tumor_centroids.append(env_data["tumor_centroid"])
+                    self.scored_paths.append(env_data["entry_points"])
+                    self.tumor_top_entry_points.append(env_data["top_entry_points"])
+                    self.start_pose.append(env_data["start_pose"])
+                    self.start_positions.append([pose["position"] for pose in env_data["start_pose"]])
+                    self.start_quaternions.append([pose["quaternion"] for pose in env_data["start_pose"]])
+                else:
+                    for key in ["tumor_position", "tumor_quat", "tumor_centroid", "scored_paths", "top_entry_points", "start_pose"]:
+                        assert key in env_data, f"[ERROR] Missing key '{key}' in entry {i}"
+                    self.tumor_positions.append(env_data["tumor_position"])
+                    self.tumor_quaternions.append(env_data["tumor_quat"])
+                    self.tumor_centroids.append(env_data["tumor_centroid"])
+                    self.scored_paths.append(env_data["scored_paths"])
+                    self.tumor_top_entry_points.append(env_data["top_entry_points"])
+                    self.start_pose.append(env_data["start_pose"])
+                    self.start_positions.append([pose["position"] for pose in env_data["start_pose"]])
+                    self.start_quaternions.append([pose["quaternion"] for pose in env_data["start_pose"]])
+
             except KeyError as e:
                 omni.log.warn(f"KeyError: {e} for env {i}. Tumor data may be incomplete.")
             except AssertionError as e:
@@ -396,7 +414,8 @@ class BiopsyDirectEnv(DirectRLEnv):
 
         self.stage = stage_utils.get_current_stage()
         self.env_ids = torch.arange(self.num_envs, device=self.device)
-        #self.set_tumor_positions()
+        if not WESTERLAND:
+            self.set_tumor_positions()
 
         # Markers
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
