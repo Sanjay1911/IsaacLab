@@ -320,7 +320,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         tumor_centroids_offset = tumor_centroids_np + offsets_np  # [N, 3]
         self.start_positions_tensor = torch.tensor(start_positions_offset, device=self.device, dtype=torch.float32)
         self.tumor_centroids_tensor = torch.tensor(tumor_centroids_offset, device=self.device, dtype=torch.float32)
-        
+        self.reward_collision_buffer = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
         # self.quaternions has shape [N, 10, 4]. I want to define each quaternion to be oriented such that 
         # negative y points in direction of tumor_centroids_tensor - start_positions_tensor which has shape [N, 10, 3]:
         self.start_quaternions_tensor = torch.zeros((self.num_envs, len(self.start_positions[0]), 4), dtype=torch.float32, device=self.device)  # (envs, poses, 4)
@@ -674,12 +674,19 @@ class BiopsyDirectEnv(DirectRLEnv):
         time_out = (self.episode_length_buf >= self.max_episode_length - 1)
         overshoot_positive = s_unclamped > (1.0 + s_tol)
         overshoot_negative = s_unclamped < (0.0 - s_tol)
-        truncated = (~success) & (time_out | overshoot_positive | overshoot_negative)
-        print(f"[DEBUG] Episode truncated due to timeout: {time_out}, overshoot+: {overshoot_positive}, overshoot-: {overshoot_negative}")
+        direct_collision = self.reward_collision_buffer < -49.5
+        truncated = (~success) & (time_out | overshoot_positive | overshoot_negative | direct_collision)
+        print(f"[DEBUG] Episode truncated due to timeout: {time_out}, overshoot+: {overshoot_positive}, overshoot-: {overshoot_negative}, direct_collision: {direct_collision}")
+        print(f"Truncated: {truncated}")
         self.extras.update({
             "success": success,
             "truncated": truncated
         })
+        if self.num_envs == 1:
+            if success or truncated:
+                print("*****************************")
+                self.truncated_dict[self.active_path_index] = bool(truncated)
+                time.sleep(.2)
         term_mask = (success | truncated)  # which envs just terminated this step
         for b in range(self.num_envs):
             if not bool(term_mask[b]):
@@ -860,7 +867,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         reward_collision = torch.where(danger_a == 1.0, -50.0, reward_collision)
         reward_collision = torch.where((danger_a >= 0.5) & (danger_a < 1.0), -25.0, reward_collision)
         reward_collision = torch.where(danger_a == 0.0, +1.0, reward_collision)
-
+        self.reward_collision_buffer = reward_collision.clone().detach()
         if self.previous_twist_action is not None:
             reward_action = torch.abs(a_bin - self.previous_twist_action.long()) / 16.0
         else:
