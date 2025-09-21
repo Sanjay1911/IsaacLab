@@ -77,6 +77,7 @@ def extract_curve(traj):
     path_idx = int(first["active_path_index"])
     start_positions = np.asarray(first["start_positions"])
     tumor_centroid = np.asarray(first["tumor_centroids"])
+    print(f"Tumor Centroid: {tumor_centroid}")
     chosen_start = start_positions[path_idx]
 
     # tip trajectory
@@ -221,12 +222,12 @@ def plot_scene(trajs, preop_start, env_id=None):
             ax.plot(curve[:, 0], curve[:, 1], curve[:, 2],
                     label=f"Env {traj['env_id']} Path {traj['path_idx']}")
             ax.scatter(start[0], start[1], start[2], c="g", marker="o", s=40)
-            ax.scatter(curve[-1, 0], curve[-1, 2], curve[-1, 2], c="r", marker="^", s=50)  # keep your end marker
+            #ax.scatter(curve[-1, 0], curve[-1, 2], curve[-1, 2], c="r", marker="^", s=50)  # keep your end marker
 
-        # pre-op straight line for context
-        ax.plot([start[0], tumor[0]], [start[1], tumor[1]], [start[2], tumor[2]],
-                linestyle="--", color="orange", alpha=0.7)
-        ax.scatter(tumor[0], tumor[1], tumor[2], c="black", marker="x", s=60)
+        # # pre-op straight line for context
+        # ax.plot([start[0], tumor[0]], [start[1], tumor[1]], [start[2], tumor[2]],
+        #         linestyle="--", color="orange", alpha=0.7)
+        # ax.scatter(tumor[0], tumor[1], tumor[2], c="black", marker="x", s=60)
 
         # per-trajectory collision step summary (optional console)
         coll_steps = int(traj.get("collision_steps", 0))
@@ -239,17 +240,14 @@ def plot_scene(trajs, preop_start, env_id=None):
         elif success and coll_steps > 2:
             collision_steps['more'] += 1
 
-
     total = traj_counter
-    
-
     print("\n[SUMMARY]")
     print(f"Total trajectories: {total}")
     print(f"  Collision-free successes: {pure_success}")
-    print(f"  Successes with ≥1 collision: {collided_success}")
-    failure = total - pure_success - collided_success
-    print(f"  Failures: {failure}")
-    success_rate = (pure_success / (total - failure)) * 100 if total > 0 else 0.0
+    #print(f"  Successes with ≥1 collision: {collided_success}")
+    failure = total - pure_success
+    print(f"  Failures(Direct Collision/Timeout/Overshoot): {failure}")
+    success_rate = (pure_success / (total)) * 100 if total > 0 else 0.0
     print(f"Success rate (pure collision-free): {success_rate:.2f}%")
     print(f"Collision steps distribution (only for collided episodes): {collision_steps}")
 

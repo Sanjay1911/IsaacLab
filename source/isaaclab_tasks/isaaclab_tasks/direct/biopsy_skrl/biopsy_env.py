@@ -124,7 +124,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/vessels.obj"
+            file_path="/home/sanjay/thesis_replications/vessels_bg002.obj"
         ),
         # spawn=sim_utils.UsdFileCfg(
         #     usd_path="assets/Vessels.usd"
@@ -137,9 +137,9 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.MeshFileCfg(
             file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(-0.03075, 0.03706, 0.17887), rot=(0.70710, 0.70710, 0.0, 0.0)),  # 0.0633, 0.03706, 0.19463 ; -0.03075, 0.03706, 0.19261; -0.03075, 0.03706, 0.19976
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.05803, 0.02323, 0.18583), rot=(0.70710, 0.70710, 0.0, 0.0)),  # 0.0633, 0.03706, 0.19463 ; -0.03075, 0.03706, 0.19261; -0.03075, 0.03706, 0.19976 ; -0.03075, 0.03706, 0.17887
     )
-
+    # 0.05803, 0.02323, 0.18583 bg002r
     needle = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/needle",
         spawn=sim_utils.CylinderCfg(
@@ -252,7 +252,7 @@ class BiopsyDirectEnv(DirectRLEnv):
             self.K_DEV = torch.tensor(10000.0, device=self.device, dtype=torch.float32)  # Deviation scaling factor
         except Exception as e:
             print("Error initializing constants:", e)
-
+        self.truncated_dict = {}  # {episode_num: boolean}
         self.insertion_lookup_table = {0: self.INSERTION_DEPTH, 1: self.INSERTION_DEPTH + 0.001, 2: self.INSERTION_DEPTH + 0.002}
         # read pickled data
         omni.log.info("Loading tumor data...")
@@ -265,7 +265,7 @@ class BiopsyDirectEnv(DirectRLEnv):
         self.start_positions = []
         self.start_quaternions = []
         if WESTERLAND:
-            self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_4_visual.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
+            self.tumor_pickle = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_bg002r    _visual.pkl")  #/home/sanjay/thesis_replications/forked/IsaacLab/tumor_dataset_100_2205_cleaned.pkl
         else:
             self.tumor_pickle = load_pickle("/home/sanjay/Downloads/rl_dataset_100envs.pkl")  #/home/sanjay/Downloads/rl_dataset_100envs.pkl
         for i in range(min(self.num_envs, len(self.tumor_pickle))):
@@ -680,7 +680,11 @@ class BiopsyDirectEnv(DirectRLEnv):
         print(f"Truncated: {truncated}")
         self.extras.update({
             "success": success,
-            "truncated": truncated
+            "truncated": truncated,
+            "direct_collision": direct_collision,
+            "time_out": time_out,
+            "overshoot_positive": overshoot_positive,
+            "overshoot_negative": overshoot_negative,
         })
         if self.num_envs == 1:
             if success or truncated:
@@ -885,16 +889,16 @@ class BiopsyDirectEnv(DirectRLEnv):
         # Debug logs
         # -------------------
         print("\n=== REWARD DEBUG ===")
-        print(f"Original action (rad): {a}")
-        print(f"Action in degrees    : {a_deg.detach().cpu().numpy()}")
+        # print(f"Original action (rad): {a}")
+        # print(f"Action in degrees    : {a_deg.detach().cpu().numpy()}")
         print(f"Action bin index     : {a_bin.detach().cpu().numpy()}")
         print(f"Danger bins          : {danger_bins.detach().cpu().numpy()}")
         print(f"Danger value chosen  : {danger_a.detach().cpu().numpy()}")
-        print(f"Reward progress      : {reward_progress.detach().cpu().numpy()}")
-        print(f"Reward deviation     : {reward_deviation_new.detach().cpu().numpy()}")
-        print(f"Reward reached tumor : {reward_reached_tumor.detach().cpu().numpy()}")
+        # print(f"Reward progress      : {reward_progress.detach().cpu().numpy()}")
+        # print(f"Reward deviation     : {reward_deviation_new.detach().cpu().numpy()}")
+        # print(f"Reward reached tumor : {reward_reached_tumor.detach().cpu().numpy()}")
         print(f"Reward collision     : {reward_collision.detach().cpu().numpy()}")
-        print(f"Final reward         : {reward.detach().cpu().numpy()}")
+        # print(f"Final reward         : {reward.detach().cpu().numpy()}")
         print("====================\n")
 
         # if reward_collision.item() == -50.0:

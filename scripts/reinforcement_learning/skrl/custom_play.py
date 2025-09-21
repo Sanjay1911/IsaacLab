@@ -174,6 +174,10 @@ def main():
         success = info.get("success", torch.zeros_like(env_ids, dtype=torch.bool))
         truncated = info.get("truncated", torch.zeros_like(env_ids, dtype=torch.bool))
         reward_collision = info.get("reward_collision", torch.zeros_like(env_ids, dtype=torch.float32))
+        direct_collision = info.get("direct_collision", torch.zeros_like(env_ids, dtype=torch.float32))
+        time_out = info.get("time_out", torch.zeros_like(env_ids, dtype=torch.float32))
+        overshoot_positive = info.get("overshoot_positive", torch.zeros_like(env_ids, dtype=torch.float32))
+        overshoot_negative = info.get("overshoot_negative", torch.zeros_like(env_ids, dtype=torch.float32))
 
         env_ids_np = to_cpu_np(env_ids).astype(np.int64)
         path_idx_np = to_cpu_np(path_idx).astype(np.int64)
@@ -207,18 +211,35 @@ def main():
 
             if succ_np[i] or trunc_np[i]:
                 episode_counter += 1
+
+                # --- classify episode ---
+                if bool(succ_np[i]) and not buffers[eid]["had_collision"] and not bool(direct_collision[i]):
+                    status = "success"
+                elif bool(direct_collision[i]):
+                    status = "failure"
+                else:
+                    status = "truncated"
+
                 completed.append({
                     "env_id": eid,
                     "path_idx": buffers[eid]["path_idx"],
                     "steps": buffers[eid]["steps"],
-                    "success": bool(succ_np[i]),
+                    "success": (status == "success"),
                     "collision": bool(buffers[eid]["had_collision"]),
                     "collision_steps": int(buffers[eid]["collision_steps"]),
+                    "time_out": bool(time_out[i]),
+                    "overshoot_positive": bool(overshoot_positive[i]),
+                    "overshoot_negative": bool(overshoot_negative[i]),
+                    "direct_collision": bool(direct_collision[i]),
+                    "status": status,   # NEW
                 })
-                print(f"[INFO] Episode {episode_counter} finished | "
-                      f"Success={bool(succ_np[i])}, Collision={bool(buffers[eid]['had_collision'])}, "
-                      f"Collision steps={buffers[eid]['collision_steps']}")
+
+                print(f"[INFO] Episode {episode_counter} finished | Status={status} | "
+                    f"Collision={bool(buffers[eid]['had_collision'])}, "
+                    f"Collision steps={buffers[eid]['collision_steps']}")
+
                 buffers[eid] = {"path_idx": pid, "steps": [], "had_collision": False, "collision_steps": 0}
+
 
     # ---- rollout loop ----
     obs, _ = env.reset()
@@ -248,15 +269,25 @@ def main():
                 if sleep_time > 0:
                     time.sleep(sleep_time)
     finally:
-        # Summary
-        num_success = sum(1 for t in completed if t["success"])
-        for t in completed:
-            print(f"[INFO] Episode {t['env_id']} finished | "
-                  f"Success={t['success']}")
-        num_trunc = sum(1 for t in completed if not t["success"])
+        num_success = sum(1 for t in completed if t["status"] == "success")
+        num_failure = sum(1 for t in completed if t["status"] == "failure")
+        num_trunc   = sum(1 for t in completed if t["status"] == "truncated")
+
         print(f"[INFO] Total episodes: {episode_counter}")
-        print(f"[INFO] Success: {num_success} | Truncated: {num_trunc}")
-        pass  # atexit will save trajectories
+        print(f"[INFO] Success: {num_success}")
+        print(f"[INFO] Failure (direct collision): {num_failure}")
+        print(f"[INFO] Truncated (timeout/overshoot/other): {num_trunc}")
+
+        # Optional: print details for debugging
+        for t in completed:
+            if t["status"] == "truncated":
+                if t["time_out"]:
+                    print(f"[INFO] Episode {t['env_id']} truncated due to timeout.")
+                if t["overshoot_positive"]:
+                    print(f"[INFO] Episode {t['env_id']} overshot positively.")
+                if t["overshoot_negative"]:
+                    print(f"[INFO] Episode {t['env_id']} overshot negatively.")
+
 
 if __name__ == "__main__":
     main()

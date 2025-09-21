@@ -130,9 +130,9 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.MeshFileCfg(
             file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0633, 0.03706, 0.19919), rot=(0.70710, 0.70710, 0.0, 0.0)), # 0.0633, 0.03706, 0.19463
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(-0.03075, 0.03706, 0.17887), rot=(0.70710, 0.70710, 0.0, 0.0)),  # 0.0633, 0.03706, 0.19919; 0.19976
     )
-
+    # 0.05803, 0.02323, 0.18583 for bg002 right hemi
     robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     # test_cube = AssetBaseCfg(
@@ -725,7 +725,7 @@ def main():
         start_positions = []
         start_quaternions = []
         # Read Tumor Dataset Pickle and get entry points and start poses
-        data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_1_visual.pkl")    
+        data = load_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_3_visual.pkl")    
         for i in range(min(num_envs, len(data))):
             print(f"[INFO] Loading data for env {i}")
             try:
@@ -766,23 +766,24 @@ def main():
             for env_id, points in enumerate(tumor_centroids):
                 offset = offsets[env_id]  # shape (3,)
                 offset_points = points + offset  # (N, 3) + (3,) → (N, 3)
-                draw_points([offset_points], color=(0.0, 0.0, 1.0, 1.0), size=40.0)   
+                draw_points([offset_points], color=(0.0, 0.0, 1.0, 1.0), size=4.0)   
                 print(f"[INFO] Drawing tumor centroid at {offset_points} in env {env_id}")     
         except Exception as e:
             print(f"[ERROR] Failed to draw tumor centroids: {e}")
             pass
 
         try:
-            for env_id, top_points in enumerate(top_entry_points):
+            for env_id, top_points in enumerate(top_entry_points[:10]):
                 for i in range(len(top_points)):
                     offset = offsets[env_id]  # shape (3,)
+                    print("Score: ", top_points[i]["score"])
                     offset_points = top_points[i]["entry_point"] + offset  # (N, 3) + (3,) → (N, 3)
                     draw_points([offset_points], color=(0.0, 1.0, 0.0, 1.0), size=4.0)
         except Exception as e:
             print(f"[ERROR] Failed to draw top entry points because: {e}")
 
         try:
-            for env_id, top_points in enumerate(top_entry_points):
+            for env_id, top_points in enumerate(top_entry_points[:10]):
                 tumor_center = tumor_centroids[env_id]
                 offset = offsets[env_id]  # shape (3,)
 
@@ -984,8 +985,8 @@ def main():
                 hits_np=valid_hits_np,
                 center=needle_center,
                 axis=insertion_axis,
-                radius=0.05,
-                height=0.05
+                radius=0.5,
+                height=0.5
             )
 
             if filtered_hits.shape[0] == 0:
@@ -996,10 +997,10 @@ def main():
                 down_pc = pc.farthest_point_down_sample(len(filtered_hits)//10)
                 sparse_points = np.asarray(down_pc.points)
                 print(f"[env {env_id}] Sparse points shape: {sparse_points.shape}")
-                draw_points(sparse_points, color=(1.0, 0.0, 1.0, 1.0), size=4.0)  
+                #draw_points(sparse_points, color=(1.0, 0.0, 1.0, 1.0), size=4.0)  
 
             print(f"[env {env_id}] Hits inside cylinder: {filtered_hits.shape[0]}/{valid_hits_np.shape[0]}")
-            #draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0)  # Optional: if you want to visualize
+            draw_points(filtered_hits, color=(0.0, 1.0, 1.0, 1.0), size=4.0)  # Optional: if you want to visualize
 
 
 

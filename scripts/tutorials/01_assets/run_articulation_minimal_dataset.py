@@ -102,7 +102,7 @@ class MinimalSceneCfg(InteractiveSceneCfg):
     vessel = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Vessel",
         spawn=sim_utils.MeshFileCfg(
-            file_path="/home/sanjay/thesis_replications/vessels.obj"
+            file_path="/home/sanjay/thesis_replications/vessels_bg002.obj"
         ),
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.20), rot=(0.70710, 0.70710, 0.0, 0.0)),
     )
@@ -112,8 +112,9 @@ class MinimalSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.MeshFileCfg(
             file_path="/home/sanjay/thesis_replications/curobo_thesis_fork/src/curobo/content/assets/scene/tumor.obj"
         ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0633, 0.03706, 0.19182), rot=(0.70710, 0.70710, 0.0, 0.0)), # 0.0633, 0.03706, 0.19463
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.05803, 0.02323, 0.18583), rot=(0.70710, 0.70710, 0.0, 0.0)),  # 0.0633, 0.03706, 0.19976
     )
+
     robot = UR5_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     raycast_camera = RayCasterCameraCfg(
@@ -637,7 +638,7 @@ def main():
 
     print(f"Dataset:", dataset)
     # Save dataset
-    dump_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_1_visual.pkl", dataset)
+    dump_pickle("/home/sanjay/thesis_replications/forked/IsaacLab/custom_visualizations/tumor_dataset_bg002r_visual.pkl", dataset)
     print("✅ Finished saving dataset with 100 tumor entries.")
 
     holder_pos_trch = torch.zeros((num_envs, 3), dtype=torch.float64, device=sim.device)
